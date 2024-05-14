@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <SPI.h>
+#include <CRC.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <Fonts/Org_01.h>
@@ -16,14 +17,14 @@
 #define LED_BUILTIN 2
 
 const int RADIO_SCLK_PIN = 18, RADIO_MISO_PIN = 19, RADIO_MOSI_PIN = 23, RADIO_NSS_PIN = 5,
-          RADIO_BUSY_PIN = 4, RADIO_RST_PIN = 15, RADIO_DIO1_PIN = 22, RADIO_DIO2_PIN = 21, 
+          RADIO_BUSY_PIN = 4, RADIO_RST_PIN = 15, RADIO_DIO1_PIN = 22, RADIO_DIO2_PIN = 21,
           OLED_SDA = 32, OLED_SCL = 17, BUTTON_SEL = 0, BUTTON_UP = 16;
 SPISettings spiSettings = SPISettings(2E6L, MSBFIRST, SPI_MODE0);
 struct sx126x_long_pkt_rx_state pktRxState;
-uint32_t freq=403000;
+uint32_t freq = 403000;
 Adafruit_SSD1306 disp(128, 64, &Wire);
 MD_KeySwitch buttonSel(BUTTON_SEL, LOW),
-	buttonUp(BUTTON_UP, LOW);
+  buttonUp(BUTTON_UP, LOW);
 // clang-format off
 const uint8_t flipByte[] = {
     0x00, 0x80, 0x40, 0xC0, 0x20, 0xA0, 0x60, 0xE0, 0x10, 0x90, 0x50, 0xD0, 0x30, 0xB0, 0x70, 0xF0,
@@ -120,7 +121,7 @@ void clearDisplay() {
   uint16_t w, h;
   char sFreq[] = "400.000";
 
-  dtostrf(freq/1000.0,6,3,sFreq);
+  dtostrf(freq / 1000.0, 6, 3, sFreq);
   disp.setFont(&FreeSans9pt7b);
   disp.getTextBounds(sFreq, 0, 0, &x1, &y1, &w, &h);
   disp.clearDisplay();
@@ -132,7 +133,7 @@ void clearDisplay() {
   disp.display();
 }
 
-void updateDisplay(uint8_t val,int frame, char *serial) {
+void updateDisplay(uint8_t val, int frame, char* serial, bool encrypted) {
   int16_t x1, y1;
   uint16_t w, h;
   static char s[10];
@@ -149,14 +150,20 @@ void updateDisplay(uint8_t val,int frame, char *serial) {
   disp.fillRect(0, 0, w, 8, WHITE);
 
   disp.setFont(&FreeSans9pt7b);
-  disp.setCursor(0,63);
+  disp.setCursor(0, 63);
   disp.print(serial);
 
   disp.setFont(&Org_01);
-  itoa(frame,s,10);
+  itoa(frame, s, 10);
   disp.getTextBounds(s, 0, 0, &x1, &y1, &w, &h);
-  disp.setCursor(127-w,63);
+  disp.setCursor(127 - w, 63);
   disp.print(s);
+
+  if (encrypted) {  //lock
+    disp.fillCircle(115, 28, 5, WHITE);
+    disp.fillCircle(115, 28, 3, BLACK);
+    disp.fillRect(109, 30, 13, 12, WHITE);
+  }
 
   disp.display();
 }
@@ -165,49 +172,49 @@ void editFreq() {
   int pos = 2;
   char sFreq[] = "400.000";
 
-  dtostrf(freq/1000.0,6,3,sFreq);
-  
+  dtostrf(freq / 1000.0, 6, 3, sFreq);
+
   disp.setFont(&FreeSansBold12pt7b);
   disp.clearDisplay();
-  disp.setCursor(20,50);
+  disp.setCursor(20, 50);
   disp.print(sFreq);
-  disp.drawRect(20+13*2, 30, 13, 25, WHITE);
+  disp.drawRect(20 + 13 * 2, 30, 13, 25, WHITE);
   disp.display();
-  
-  while(true) {
-		switch (buttonSel.read()) {
-		case MD_KeySwitch::KS_PRESS:
-			disp.fillRect(20+13*pos-(pos>2?6:0), 30, 13, 25, BLACK);
-      if (++pos==3) pos=4;
-			if (pos==7) {
-				pos=2;
-        freq=(int)roundf(1000*atof(sFreq));
-				Serial.printf("nuova frequenza: %d\n",freq);
-        clearDisplay();
-        sx126x_long_pkt_rx_complete(NULL);
-        sx126x_set_rf_freq(NULL, freq*1000UL);
-        sx126x_long_pkt_set_rx_with_timeout_in_rtc_step(NULL, &pktRxState, SX126X_RX_CONTINUOUS);
-				EEPROM.writeUInt(0,freq);
-        EEPROM.commit();
-        return;
-			}
-			disp.setCursor(20,50);
-			disp.print(sFreq);
-			disp.drawRect(20+13*pos-(pos>2?6:0), 30, 13, 25, WHITE);
-			disp.display();
-			break;
-		}
-		switch (buttonUp.read()) {
-		case MD_KeySwitch::KS_PRESS:
-		case MD_KeySwitch::KS_RPTPRESS:
-			if (++sFreq[pos]>'9' || pos==2 && sFreq[2]>'5') sFreq[pos]='0';
-			disp.fillRect(20+13*pos-(pos>2?6:0), 30, 13, 25, BLACK);
-			disp.setCursor(20,50);
-			disp.print(sFreq);
-			disp.drawRect(20+13*pos-(pos>2?6:0), 30, 13, 25, WHITE);
-			disp.display();
-			break;
-		}
+
+  while (true) {
+    switch (buttonSel.read()) {
+      case MD_KeySwitch::KS_PRESS:
+        disp.fillRect(20 + 13 * pos - (pos > 2 ? 6 : 0), 30, 13, 25, BLACK);
+        if (++pos == 3) pos = 4;
+        if (pos == 7) {
+          pos = 2;
+          freq = (int)roundf(1000 * atof(sFreq));
+          Serial.printf("nuova frequenza: %d\n", freq);
+          clearDisplay();
+          sx126x_long_pkt_rx_complete(NULL);
+          sx126x_set_rf_freq(NULL, freq * 1000UL);
+          sx126x_long_pkt_set_rx_with_timeout_in_rtc_step(NULL, &pktRxState, SX126X_RX_CONTINUOUS);
+          EEPROM.writeUInt(0, freq);
+          EEPROM.commit();
+          return;
+        }
+        disp.setCursor(20, 50);
+        disp.print(sFreq);
+        disp.drawRect(20 + 13 * pos - (pos > 2 ? 6 : 0), 30, 13, 25, WHITE);
+        disp.display();
+        break;
+    }
+    switch (buttonUp.read()) {
+      case MD_KeySwitch::KS_PRESS:
+      case MD_KeySwitch::KS_RPTPRESS:
+        if (++sFreq[pos] > '9' || pos == 2 && sFreq[2] > '5') sFreq[pos] = '0';
+        disp.fillRect(20 + 13 * pos - (pos > 2 ? 6 : 0), 30, 13, 25, BLACK);
+        disp.setCursor(20, 50);
+        disp.print(sFreq);
+        disp.drawRect(20 + 13 * pos - (pos > 2 ? 6 : 0), 30, 13, 25, WHITE);
+        disp.display();
+        break;
+    }
   }
 }
 
@@ -215,12 +222,12 @@ void setup() {
   Serial.begin(115200);
 
   EEPROM.begin(sizeof freq);
-  freq=EEPROM.readUInt(0);
-  if (freq<400000UL || freq>=406000UL)
-    freq=403000UL;
+  freq = EEPROM.readUInt(0);
+  if (freq < 400000UL || freq >= 406000UL)
+    freq = 403000UL;
 
-  pinMode(BUTTON_SEL,INPUT);
-  pinMode(BUTTON_UP,INPUT_PULLUP);
+  pinMode(BUTTON_SEL, INPUT);
+  pinMode(BUTTON_UP, INPUT_PULLUP);
   buttonSel.enableRepeat(false);
   buttonSel.enableLongPress(true);
   buttonUp.enableRepeat(true);
@@ -261,7 +268,7 @@ void setup() {
   delay(1);
   res = sx126x_set_pkt_type(NULL, SX126X_PKT_TYPE_GFSK);
   Serial.printf("sx126x_set_pkt_type %d\n", res);
-  res = sx126x_set_rf_freq(NULL, freq*1000UL);
+  res = sx126x_set_rf_freq(NULL, freq * 1000UL);
   Serial.printf("sx126x_set_rf_freq %d\n", res);
   res = sx126x_set_gfsk_mod_params(NULL, &modParams);
   Serial.printf("sx126x_set_gfsk_mod_params %d\n", res);
@@ -294,30 +301,34 @@ void dump(uint8_t buf[], int size) {
   if (size % 16 != 0) Serial.println();
 }
 
-void processPacket(uint8_t buf[],int rssi) {
+void processPacket(uint8_t buf[], int rssi) {
   //TODO: ECC
-  int n=48+1;
+  int n = 48 + 1, frame;
+  bool show = false, encrypted = false;
+  char serial[9] = "";
+    
 
-  if (buf[48]!=0x0F) return;
+  if (buf[48] != 0x0F) return;
 
-  while (n<312) {
-    int blockType=buf[n];
-    int blockLength=buf[n+1];
-    //Serial.printf("Blocco 0x%02X, lunghezza %d, CRC: %02X%02X\n",blockType,blockLength,buf[n+blockLength+3],buf[n+blockLength+2]);
-    if (blockType==0x79) {
-      //TODO: controllo CRC
-      int frame=buf[n+2]+(buf[n+3]<<8);
-      Serial.printf("\tframe: %d [%.8s]\n",frame,buf+n+4);
+  while (n < 312) {
+    int blockType = buf[n];
+    int blockLength = buf[n + 1];
+    uint16_t crc = calcCRC16(buf + n + 2, blockLength, CRC16_CCITT_FALSE_POLYNOME, CRC16_CCITT_FALSE_INITIAL, CRC16_CCITT_FALSE_XOR_OUT, CRC16_CCITT_FALSE_REV_IN, CRC16_CCITT_FALSE_REV_OUT);
+    Serial.printf("Blocco 0x%02X, lunghezza %d, CRC: %02X%02X/%02X%02X\n", blockType, blockLength, buf[n + blockLength + 3], buf[n + blockLength + 2],crc>>8, crc&0xFF);
+    if (blockType == 0x80 && crc & 0xFF == buf[n + blockLength + 2] && crc >> 8 == buf[n + blockLength + 3])
+      encrypted = true;
+    else if (blockType == 0x79 && (crc & 0xFF) == buf[n + blockLength + 2] && (crc >> 8) == buf[n + blockLength + 3]) {
+      frame = buf[n + 2] + (buf[n + 3] << 8);
+      Serial.printf("\tframe: %d [%.8s]\n", frame, buf + n + 4);
 
-      char serial[9]="";
-      strncpy(serial,(char*)buf+n+4,8);
-      updateDisplay(rssi,frame,serial);
-
+      strncpy(serial, (char*)buf + n + 4, 8);
+      show = true;
     }
 
-    n+=blockLength+4;
+    n += blockLength + 4;
   }
-  Serial.println();
+  if (show)
+    updateDisplay(rssi, frame, serial, encrypted);
 }
 
 uint8_t buf[312];
@@ -330,7 +341,7 @@ void loop() {
   sx126x_rx_buffer_status_t bufStatus;
 
   digitalWrite(LED_BUILTIN, millis() % 1000 < 100);
-  if (buttonSel.read()==MD_KeySwitch::KS_PRESS)
+  if (buttonSel.read() == MD_KeySwitch::KS_PRESS)
     editFreq();
   if (tLastPacket != 0 && millis() - tLastPacket > 3000) {
     clearDisplay();
@@ -372,8 +383,7 @@ void loop() {
       //dump(buf, sizeof buf);
 
       sx126x_get_gfsk_pkt_status(NULL, &pktStatus);
-      processPacket(buf,pktStatus.rssi_sync);
+      processPacket(buf, pktStatus.rssi_sync);
     }
   }
 }
-
