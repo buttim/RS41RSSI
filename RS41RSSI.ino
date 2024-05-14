@@ -6,6 +6,7 @@
 #include <Fonts/FreeSans9pt7b.h>
 #include <Fonts/FreeSansBold12pt7b.h>
 #include <MD_KeySwitch.h>
+#include <EEPROM.h>
 #include "sx126x.h"
 #include "sx126x_regs.h"
 #include "sx126x_hal.h"
@@ -125,6 +126,8 @@ void clearDisplay() {
   disp.clearDisplay();
   disp.setCursor((128 - w) / 2, 28);
   disp.print(sFreq);
+  disp.setCursor(18, 60);
+  disp.print("RS41 RSSI");
 
   disp.display();
 }
@@ -184,7 +187,8 @@ void editFreq() {
         sx126x_long_pkt_rx_complete(NULL);
         sx126x_set_rf_freq(NULL, freq*1000UL);
         sx126x_long_pkt_set_rx_with_timeout_in_rtc_step(NULL, &pktRxState, SX126X_RX_CONTINUOUS);
-				//TODO: salvare
+				EEPROM.writeUInt(0,freq);
+        EEPROM.commit();
         return;
 			}
 			disp.setCursor(20,50);
@@ -209,10 +213,11 @@ void editFreq() {
 
 void setup() {
   Serial.begin(115200);
-  while (!Serial)
-    ;
 
-  Serial.println("----------------------------------------");
+  EEPROM.begin(sizeof freq);
+  freq=EEPROM.readUInt(0);
+  if (freq<400000UL || freq>=406000UL)
+    freq=403000UL;
 
   pinMode(BUTTON_SEL,INPUT);
   pinMode(BUTTON_UP,INPUT_PULLUP);
