@@ -8,6 +8,7 @@
 #include <Fonts/FreeSansBold12pt7b.h>
 #include <MD_KeySwitch.h>
 #include <EEPROM.h>
+#include <RS-FEC.h>
 #include "sx126x.h"
 #include "sx126x_regs.h"
 #include "sx126x_hal.h"
@@ -18,13 +19,16 @@
 
 const int RADIO_SCLK_PIN = 18, RADIO_MISO_PIN = 19, RADIO_MOSI_PIN = 23, RADIO_NSS_PIN = 5,
           RADIO_BUSY_PIN = 4, RADIO_RST_PIN = 15, RADIO_DIO1_PIN = 22, RADIO_DIO2_PIN = 21,
-          OLED_SDA = 32, OLED_SCL = 17, BUTTON_SEL = 0, BUTTON_UP = 16;
+          OLED_SDA = 32, OLED_SCL = 17, BUTTON_SEL = 0, BUTTON_UP = 16, PACKET_LENGTH = 312;
+
 SPISettings spiSettings = SPISettings(2E6L, MSBFIRST, SPI_MODE0);
 struct sx126x_long_pkt_rx_state pktRxState;
 uint32_t freq = 403000;
+uint8_t buf[PACKET_LENGTH];
+RS::ReedSolomon<99+(PACKET_LENGTH-48)/2, 24> rs;
+int nBytesRead = 0;
 Adafruit_SSD1306 disp(128, 64, &Wire);
-MD_KeySwitch buttonSel(BUTTON_SEL, LOW),
-  buttonUp(BUTTON_UP, LOW);
+MD_KeySwitch buttonSel(BUTTON_SEL, LOW), buttonUp(BUTTON_UP, LOW);
 // clang-format off
 const uint8_t flipByte[] = {
     0x00, 0x80, 0x40, 0xC0, 0x20, 0xA0, 0x60, 0xE0, 0x10, 0x90, 0x50, 0xD0, 0x30, 0xB0, 0x70, 0xF0,
@@ -301,21 +305,52 @@ void dump(uint8_t buf[], int size) {
   if (size % 16 != 0) Serial.println();
 }
 
+bool correctErrors(uint8_t data[]) {
+  static uint8_t buf[256],dec[256];
+  int i;
+
+  //prima parte
+  memset(buf,0,256);
+  for (i=0;i<(PACKET_LENGTH-48)/2;i++)
+    buf[99+i]=data[PACKET_LENGTH-1-2*i];
+  for (i=0;i<24;i++)
+    buf[254-i]=data[24+i];
+
+  if (0!=rs.Decode(buf,dec)) return false;
+
+  for (i=0;i<(PACKET_LENGTH-48)/2;i++)
+    data[311-2*i]=dec[99+i];
+  
+  //seconda parte
+  memset(buf,0,256);
+  for (i=0;i<(PACKET_LENGTH-48)/2;i++)
+    buf[99+i]=data[PACKET_LENGTH-1-2*i-1];
+  for (i=0;i<24;i++)
+    buf[254-i]=data[i];
+
+  if (0!=rs.Decode(buf,dec) ) return false;
+
+  for (i=0;i<(PACKET_LENGTH-48)/2;i++)
+    data[PACKET_LENGTH-1-2*i-1]=dec[99+i];
+
+  return true;
+}
+
 void processPacket(uint8_t buf[], int rssi) {
-  //TODO: ECC
   int n = 48 + 1, frame;
   bool show = false, encrypted = false;
   char serial[9] = "";
     
+  if (!correctErrors(buf)) return;
 
   if (buf[48] != 0x0F) return;
 
-  while (n < 312) {
+  while (n < PACKET_LENGTH) {
     int blockType = buf[n];
     int blockLength = buf[n + 1];
     uint16_t crc = calcCRC16(buf + n + 2, blockLength, CRC16_CCITT_FALSE_POLYNOME, CRC16_CCITT_FALSE_INITIAL, CRC16_CCITT_FALSE_XOR_OUT, CRC16_CCITT_FALSE_REV_IN, CRC16_CCITT_FALSE_REV_OUT);
     Serial.printf("Blocco 0x%02X, lunghezza %d, CRC: %02X%02X/%02X%02X\n", blockType, blockLength, buf[n + blockLength + 3], buf[n + blockLength + 2],crc>>8, crc&0xFF);
-    if (blockType == 0x80 && crc & 0xFF == buf[n + blockLength + 2] && crc >> 8 == buf[n + blockLength + 3])
+    if (blockType == 0x80 && (crc & 0xFF) == buf[n + blockLength + 2] && (crc >> 8) == buf[n + blockLength + 3])
       encrypted = true;
     else if (blockType == 0x79 && (crc & 0xFF) == buf[n + blockLength + 2] && (crc >> 8) == buf[n + blockLength + 3]) {
       frame = buf[n + 2] + (buf[n + 3] << 8);
@@ -331,8 +366,6 @@ void processPacket(uint8_t buf[], int rssi) {
     updateDisplay(rssi, frame, serial, encrypted);
 }
 
-uint8_t buf[312];
-int nBytesRead = 0;
 
 void loop() {
   static uint64_t tLastRead = 0, tLastPacket = 0;
@@ -340,7 +373,6 @@ void loop() {
   sx126x_pkt_status_gfsk_t pktStatus;
   sx126x_rx_buffer_status_t bufStatus;
 
-  digitalWrite(LED_BUILTIN, millis() % 1000 < 100);
   if (buttonSel.read() == MD_KeySwitch::KS_PRESS)
     editFreq();
   if (tLastPacket != 0 && millis() - tLastPacket > 3000) {
@@ -350,6 +382,7 @@ void loop() {
 
   if (digitalRead(RADIO_DIO1_PIN) == HIGH) {
     Serial.println("SYNC");
+    digitalWrite(LED_BUILTIN,HIGH);
     tLastPacket = tLastRead = millis();
     nBytesRead = 0;
     res = sx126x_clear_irq_status(NULL, SX126X_IRQ_SYNC_WORD_VALID);
@@ -372,6 +405,7 @@ void loop() {
     nBytesRead += read;
     if (sizeof buf - nBytesRead <= 255) {
       res = sx126x_long_pkt_rx_prepare_for_last(NULL, &pktRxState, sizeof buf - nBytesRead);
+      digitalWrite(LED_BUILTIN,LOW);
     }
     if (nBytesRead == sizeof buf) {
       sx126x_long_pkt_rx_complete(NULL);
