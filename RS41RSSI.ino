@@ -3,7 +3,6 @@
 #include <CRC.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
-#include <Fonts/Org_01.h>
 #include <Fonts/FreeSans9pt7b.h>
 #include <Fonts/FreeSansBold12pt7b.h>
 #include <MD_KeySwitch.h>
@@ -142,31 +141,29 @@ void updateDisplay(uint8_t val, int frame, char* serial, bool encrypted) {
   uint16_t w, h;
   static char s[10];
 
-  disp.setFont(&FreeSansBold12pt7b);
-  dtostrf(-val / 2.0, 3, 1, s);
-  disp.getTextBounds(s, 0, 0, &x1, &y1, &w, &h);
   disp.clearDisplay();
-  disp.setCursor((128 - w) / 2, 37);
-  disp.print(s);
-
   w = constrain(map(val, 0, 256, 0, 128), 0, 128);
   disp.drawRect(0, 0, 128, 8, WHITE);
   disp.fillRect(0, 0, w, 8, WHITE);
+
+  disp.setFont(&FreeSansBold12pt7b);
+  dtostrf(-val / 2.0, 3, 1, s);
+  disp.setCursor(5, 37);
+  disp.print(s);
 
   disp.setFont(&FreeSans9pt7b);
   disp.setCursor(0, 63);
   disp.print(serial);
 
-  disp.setFont(&Org_01);
   itoa(frame, s, 10);
   disp.getTextBounds(s, 0, 0, &x1, &y1, &w, &h);
-  disp.setCursor(127 - w, 63);
+  disp.setCursor(124 - w, 37);
   disp.print(s);
 
   if (encrypted) {  //lock
-    disp.fillCircle(115, 28, 5, WHITE);
-    disp.fillCircle(115, 28, 3, BLACK);
-    disp.fillRect(109, 30, 13, 12, WHITE);
+    disp.fillCircle(117, 52, 5, WHITE);
+    disp.fillCircle(117, 52, 3, BLACK);
+    disp.fillRect(111, 54, 13, 12, WHITE);
   }
 
   disp.display();
@@ -233,7 +230,7 @@ void setup() {
   pinMode(BUTTON_SEL, INPUT);
   pinMode(BUTTON_UP, INPUT_PULLUP);
   buttonSel.enableRepeat(false);
-  buttonSel.enableLongPress(true);
+  buttonSel.enableLongPress(false);
   buttonUp.enableRepeat(true);
   buttonUp.enableLongPress(false);
 
