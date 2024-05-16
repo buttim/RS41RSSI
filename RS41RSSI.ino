@@ -28,6 +28,9 @@ RS::ReedSolomon<99+(PACKET_LENGTH-48)/2, 24> rs;
 int nBytesRead = 0;
 Adafruit_SSD1306 disp(128, 64, &Wire);
 MD_KeySwitch buttonSel(BUTTON_SEL, LOW), buttonUp(BUTTON_UP, LOW);
+char serial[9] = "";
+int frame=0, rssi;
+bool  encrypted = false;
 // clang-format off
 const uint8_t flipByte[] = {
     0x00, 0x80, 0x40, 0xC0, 0x20, 0xA0, 0x60, 0xE0, 0x10, 0x90, 0x50, 0xD0, 0x30, 0xB0, 0x70, 0xF0,
@@ -334,9 +337,8 @@ bool correctErrors(uint8_t data[]) {
 }
 
 void processPacket(uint8_t buf[], int rssi) {
-  int n = 48 + 1, frame;
-  bool show = false, encrypted = false;
-  char serial[9] = "";
+  int n = 48 + 1;
+  bool show = false;
     
   if (!correctErrors(buf)) return;
 
@@ -370,6 +372,11 @@ void loop() {
   sx126x_pkt_status_gfsk_t pktStatus;
   sx126x_rx_buffer_status_t bufStatus;
 
+  if (buttonUp.read() == MD_KeySwitch::KS_PRESS && frame>0) {
+    updateDisplay(rssi,frame,serial,encrypted);
+    delay(3000);
+    clearDisplay();
+  }
   if (buttonSel.read() == MD_KeySwitch::KS_PRESS)
     editFreq();
   if (tLastPacket != 0 && millis() - tLastPacket > 3000) {
@@ -414,7 +421,8 @@ void loop() {
       //dump(buf, sizeof buf);
 
       sx126x_get_gfsk_pkt_status(NULL, &pktStatus);
-      processPacket(buf, pktStatus.rssi_sync);
+      rssi = pktStatus.rssi_sync;
+      processPacket(buf, rssi);
     }
   }
 }
