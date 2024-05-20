@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <SPI.h>
 #include <CRC.h>
+#include <Adafruit_HMC5883_U.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <Fonts/FreeSans9pt7b.h>
@@ -8,7 +9,7 @@
 #include <MD_KeySwitch.h>
 #include <EEPROM.h>
 #include <RS-FEC.h>
-#include "sx126x.h"
+#include "sx126x.h"m
 #include "sx126x_regs.h"
 #include "sx126x_hal.h"
 #include "sx126x_long_pkt.h"
@@ -16,21 +17,22 @@
 #undef LED_BUILTIN
 #define LED_BUILTIN 2
 
-const int RADIO_SCLK_PIN = 18, RADIO_MISO_PIN = 19, RADIO_MOSI_PIN = 23, RADIO_NSS_PIN = 5,
-          RADIO_BUSY_PIN = 4, RADIO_RST_PIN = 15, RADIO_DIO1_PIN = 22, RADIO_DIO2_PIN = 21,
-          OLED_SDA = 32, OLED_SCL = 17, BUTTON_SEL = 0, BUTTON_UP = 16, PACKET_LENGTH = 312;
+const int RADIO_SCLK_PIN = 18, RADIO_MISO_PIN = 19, RADIO_MOSI_PIN = 23, RADIO_NSS_PIN = 5, RADIO_BUSY_PIN = 4,
+          RADIO_RST_PIN = 15, RADIO_DIO1_PIN = 17, OLED_SDA = 21, OLED_SCL = 22, BUTTON_SEL = 0, BUTTON_UP = 16,
+          PACKET_LENGTH = 312;
 
 SPISettings spiSettings = SPISettings(2E6L, MSBFIRST, SPI_MODE0);
 struct sx126x_long_pkt_rx_state pktRxState;
 uint32_t freq = 403000;
 uint8_t buf[PACKET_LENGTH];
-RS::ReedSolomon<99+(PACKET_LENGTH-48)/2, 24> rs;
+RS::ReedSolomon<99 + (PACKET_LENGTH - 48) / 2, 24> rs;
 int nBytesRead = 0;
 Adafruit_SSD1306 disp(128, 64, &Wire);
+Adafruit_HMC5883_Unified mag = Adafruit_HMC5883_Unified();
 MD_KeySwitch buttonSel(BUTTON_SEL, LOW), buttonUp(BUTTON_UP, LOW);
-char serial[9] = "";
-int frame=0, rssi;
-bool  encrypted = false;
+char serial[10] = "?????????";
+int frame = 0, rssi;
+bool encrypted = false;
 // clang-format off
 const uint8_t flipByte[] = {
     0x00, 0x80, 0x40, 0xC0, 0x20, 0xA0, 0x60, 0xE0, 0x10, 0x90, 0x50, 0xD0, 0x30, 0xB0, 0x70, 0xF0,
@@ -158,10 +160,12 @@ void updateDisplay(uint8_t val, int frame, char* serial, bool encrypted) {
   disp.setCursor(0, 63);
   disp.print(serial);
 
-  itoa(frame, s, 10);
-  disp.getTextBounds(s, 0, 0, &x1, &y1, &w, &h);
-  disp.setCursor(124 - w, 37);
-  disp.print(s);
+  if (frame > 0) {
+    itoa(frame, s, 10);
+    disp.getTextBounds(s, 0, 0, &x1, &y1, &w, &h);
+    disp.setCursor(124 - w, 37);
+    disp.print(s);
+  }
 
   if (encrypted) {  //lock
     disp.fillCircle(117, 52, 5, WHITE);
@@ -225,6 +229,15 @@ void editFreq() {
 void setup() {
   Serial.begin(115200);
 
+  sensor_t sensor;
+  if (!mag.begin()) {
+    Serial.println("Nessun HMC5883 rilevato");
+    while (true)
+      ;
+  }
+  mag.getSensor(&sensor);
+  Serial.println(sensor.version);
+
   EEPROM.begin(sizeof freq);
   freq = EEPROM.readUInt(0);
   if (freq < 400000UL || freq >= 406000UL)
@@ -247,7 +260,6 @@ void setup() {
   pinMode(RADIO_RST_PIN, OUTPUT);
   pinMode(RADIO_BUSY_PIN, INPUT);
   pinMode(RADIO_DIO1_PIN, INPUT);
-  pinMode(RADIO_DIO2_PIN, INPUT);
 
   sx126x_mod_params_gfsk_t modParams = {
     .br_in_bps = 4800,
@@ -306,65 +318,64 @@ void dump(uint8_t buf[], int size) {
 }
 
 bool correctErrors(uint8_t data[]) {
-  static uint8_t buf[256],dec[256];
+  static uint8_t buf[256], dec[256];
   int i;
 
   //prima parte
-  memset(buf,0,256);
-  for (i=0;i<(PACKET_LENGTH-48)/2;i++)
-    buf[99+i]=data[PACKET_LENGTH-1-2*i];
-  for (i=0;i<24;i++)
-    buf[254-i]=data[24+i];
+  memset(buf, 0, 256);
+  for (i = 0; i < (PACKET_LENGTH - 48) / 2; i++)
+    buf[99 + i] = data[PACKET_LENGTH - 1 - 2 * i];
+  for (i = 0; i < 24; i++)
+    buf[254 - i] = data[24 + i];
 
-  if (0!=rs.Decode(buf,dec)) return false;
+  if (0 != rs.Decode(buf, dec)) return false;
 
-  for (i=0;i<(PACKET_LENGTH-48)/2;i++)
-    data[311-2*i]=dec[99+i];
-  
+  for (i = 0; i < (PACKET_LENGTH - 48) / 2; i++)
+    data[311 - 2 * i] = dec[99 + i];
+
   //seconda parte
-  memset(buf,0,256);
-  for (i=0;i<(PACKET_LENGTH-48)/2;i++)
-    buf[99+i]=data[PACKET_LENGTH-1-2*i-1];
-  for (i=0;i<24;i++)
-    buf[254-i]=data[i];
+  memset(buf, 0, 256);
+  for (i = 0; i < (PACKET_LENGTH - 48) / 2; i++)
+    buf[99 + i] = data[PACKET_LENGTH - 1 - 2 * i - 1];
+  for (i = 0; i < 24; i++)
+    buf[254 - i] = data[i];
 
-  if (0!=rs.Decode(buf,dec) ) return false;
+  if (0 != rs.Decode(buf, dec)) return false;
 
-  for (i=0;i<(PACKET_LENGTH-48)/2;i++)
-    data[PACKET_LENGTH-1-2*i-1]=dec[99+i];
+  for (i = 0; i < (PACKET_LENGTH - 48) / 2; i++)
+    data[PACKET_LENGTH - 1 - 2 * i - 1] = dec[99 + i];
 
   return true;
 }
 
 void processPacket(uint8_t buf[], int rssi) {
   int n = 48 + 1;
-  bool show = false;
-    
-  if (!correctErrors(buf)) return;
 
-  if (buf[48] != 0x0F) return;
+  frame = 0;
+  strcpy(serial, "?????????");
+  encrypted = false;
 
-  while (n < PACKET_LENGTH) {
-    int blockType = buf[n];
-    int blockLength = buf[n + 1];
-    uint16_t crc = calcCRC16(buf + n + 2, blockLength, CRC16_CCITT_FALSE_POLYNOME, CRC16_CCITT_FALSE_INITIAL, CRC16_CCITT_FALSE_XOR_OUT, CRC16_CCITT_FALSE_REV_IN, CRC16_CCITT_FALSE_REV_OUT);
-    Serial.printf("Blocco 0x%02X, lunghezza %d, CRC: %02X%02X/%02X%02X\n", blockType, blockLength, buf[n + blockLength + 3], buf[n + blockLength + 2],crc>>8, crc&0xFF);
-    if (blockType == 0x80 && (crc & 0xFF) == buf[n + blockLength + 2] && (crc >> 8) == buf[n + blockLength + 3])
-      encrypted = true;
-    else if (blockType == 0x79 && (crc & 0xFF) == buf[n + blockLength + 2] && (crc >> 8) == buf[n + blockLength + 3]) {
-      frame = buf[n + 2] + (buf[n + 3] << 8);
-      Serial.printf("\tframe: %d [%.8s]\n", frame, buf + n + 4);
+  Serial.printf("RSSI: %d\n", rssi);
+  if (correctErrors(buf) && buf[48] == 0x0F) {
+    while (n < PACKET_LENGTH) {
+      int blockType = buf[n];
+      int blockLength = buf[n + 1];
+      uint16_t crc = calcCRC16(buf + n + 2, blockLength, CRC16_CCITT_FALSE_POLYNOME, CRC16_CCITT_FALSE_INITIAL, CRC16_CCITT_FALSE_XOR_OUT, CRC16_CCITT_FALSE_REV_IN, CRC16_CCITT_FALSE_REV_OUT);
+      Serial.printf("Blocco 0x%02X, lunghezza %d, CRC: %02X%02X/%02X%02X\n", blockType, blockLength, buf[n + blockLength + 3], buf[n + blockLength + 2], crc >> 8, crc & 0xFF);
+      if (blockType == 0x80 && (crc & 0xFF) == buf[n + blockLength + 2] && (crc >> 8) == buf[n + blockLength + 3])
+        encrypted = true;
+      else if (blockType == 0x79 && (crc & 0xFF) == buf[n + blockLength + 2] && (crc >> 8) == buf[n + blockLength + 3]) {
+        frame = buf[n + 2] + (buf[n + 3] << 8);
+        Serial.printf("\tframe: %d [%.8s]\n", frame, buf + n + 4);
 
-      strncpy(serial, (char*)buf + n + 4, 8);
-      show = true;
+        strncpy(serial, (char*)buf + n + 4, sizeof serial - 1);
+      }
+
+      n += blockLength + 4;
     }
-
-    n += blockLength + 4;
   }
-  if (show)
-    updateDisplay(rssi, frame, serial, encrypted);
+  updateDisplay(rssi, frame, serial, encrypted);
 }
-
 
 void loop() {
   static uint64_t tLastRead = 0, tLastPacket = 0;
@@ -372,8 +383,13 @@ void loop() {
   sx126x_pkt_status_gfsk_t pktStatus;
   sx126x_rx_buffer_status_t bufStatus;
 
-  if (buttonUp.read() == MD_KeySwitch::KS_PRESS && frame>0) {
-    updateDisplay(rssi,frame,serial,encrypted);
+  sensors_event_t event;
+  mag.getEvent(&event);
+  float heading = atan2(event.magnetic.y, event.magnetic.x);
+  Serial.printf("heading: %.1f\n", heading * 180 / M_PI);
+
+  if (buttonUp.read() == MD_KeySwitch::KS_PRESS) {
+    updateDisplay(rssi, frame, serial, encrypted);
     delay(3000);
     clearDisplay();
   }
@@ -385,8 +401,8 @@ void loop() {
   }
 
   if (digitalRead(RADIO_DIO1_PIN) == HIGH) {
-    Serial.println("SYNC");
-    digitalWrite(LED_BUILTIN,HIGH);
+    //Serial.println("SYNC");
+    digitalWrite(LED_BUILTIN, HIGH);
     tLastPacket = tLastRead = millis();
     nBytesRead = 0;
     res = sx126x_clear_irq_status(NULL, SX126X_IRQ_SYNC_WORD_VALID);
@@ -405,11 +421,11 @@ void loop() {
       nBytesRead = 0;
       return;
     }
-    Serial.printf("READ %d\n", read);
+    //Serial.printf("READ %d\n", read);
     nBytesRead += read;
     if (sizeof buf - nBytesRead <= 255) {
       res = sx126x_long_pkt_rx_prepare_for_last(NULL, &pktRxState, sizeof buf - nBytesRead);
-      digitalWrite(LED_BUILTIN,LOW);
+      digitalWrite(LED_BUILTIN, LOW);
     }
     if (nBytesRead == sizeof buf) {
       sx126x_long_pkt_rx_complete(NULL);
