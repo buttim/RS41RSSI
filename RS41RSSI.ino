@@ -1,7 +1,6 @@
 #include <stdint.h>
 #include <SPI.h>
 #include <CRC.h>
-#include <Adafruit_HMC5883_U.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <Fonts/FreeSans9pt7b.h>
@@ -28,7 +27,6 @@ uint8_t buf[PACKET_LENGTH];
 RS::ReedSolomon<99 + (PACKET_LENGTH - 48) / 2, 24> rs;
 int nBytesRead = 0;
 Adafruit_SSD1306 disp(128, 64, &Wire);
-Adafruit_HMC5883_Unified mag = Adafruit_HMC5883_Unified();
 MD_KeySwitch buttonSel(BUTTON_SEL, LOW), buttonUp(BUTTON_UP, LOW);
 char serial[10] = "?????????";
 int frame = 0, rssi;
@@ -229,15 +227,6 @@ void editFreq() {
 void setup() {
   Serial.begin(115200);
 
-  sensor_t sensor;
-  if (!mag.begin()) {
-    Serial.println("Nessun HMC5883 rilevato");
-    while (true)
-      ;
-  }
-  mag.getSensor(&sensor);
-  Serial.println(sensor.version);
-
   EEPROM.begin(sizeof freq);
   freq = EEPROM.readUInt(0);
   if (freq < 400000UL || freq >= 406000UL)
@@ -382,11 +371,6 @@ void loop() {
   sx126x_status_t res;
   sx126x_pkt_status_gfsk_t pktStatus;
   sx126x_rx_buffer_status_t bufStatus;
-
-  sensors_event_t event;
-  mag.getEvent(&event);
-  float heading = atan2(event.magnetic.y, event.magnetic.x);
-  Serial.printf("heading: %.1f\n", heading * 180 / M_PI);
 
   if (buttonUp.read() == MD_KeySwitch::KS_PRESS) {
     updateDisplay(rssi, frame, serial, encrypted);
