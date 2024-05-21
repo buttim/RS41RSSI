@@ -2,13 +2,13 @@
 #include <SPI.h>
 #include <CRC.h>
 #include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
-#include <Fonts/FreeSans9pt7b.h>
-#include <Fonts/FreeSansBold12pt7b.h>
+#include <Adafruit_PCD8544.h>
+#include <Fonts/FreeSansBold9pt7b.h>
+#include <Fonts/Org_01.h>
 #include <MD_KeySwitch.h>
 #include <EEPROM.h>
 #include <RS-FEC.h>
-#include "sx126x.h"m
+#include "sx126x.h"
 #include "sx126x_regs.h"
 #include "sx126x_hal.h"
 #include "sx126x_long_pkt.h"
@@ -16,9 +16,10 @@
 #undef LED_BUILTIN
 #define LED_BUILTIN 2
 
+//DISP_DIN=23, DISP_CLK=18
 const int RADIO_SCLK_PIN = 18, RADIO_MISO_PIN = 19, RADIO_MOSI_PIN = 23, RADIO_NSS_PIN = 5, RADIO_BUSY_PIN = 4,
-          RADIO_RST_PIN = 15, RADIO_DIO1_PIN = 17, OLED_SDA = 21, OLED_SCL = 22, BUTTON_SEL = 0, BUTTON_UP = 16,
-          PACKET_LENGTH = 312;
+          RADIO_RST_PIN = 15, RADIO_DIO1_PIN = 17, DISP_DC = 3, DISP_RST = 22, DISP_CS = 21, BUTTON_SEL = 0, BUTTON_UP = 16,
+          PACKET_LENGTH = 312, WIDTH = 84;
 
 SPISettings spiSettings = SPISettings(2E6L, MSBFIRST, SPI_MODE0);
 struct sx126x_long_pkt_rx_state pktRxState;
@@ -26,10 +27,11 @@ uint32_t freq = 403000;
 uint8_t buf[PACKET_LENGTH];
 RS::ReedSolomon<99 + (PACKET_LENGTH - 48) / 2, 24> rs;
 int nBytesRead = 0;
-Adafruit_SSD1306 disp(128, 64, &Wire);
+Adafruit_PCD8544 disp = Adafruit_PCD8544(DISP_DC, DISP_CS, DISP_RST);
 MD_KeySwitch buttonSel(BUTTON_SEL, LOW), buttonUp(BUTTON_UP, LOW);
 char serial[10] = "?????????";
 int frame = 0, rssi;
+uint8_t contrast = 50;
 bool encrypted = false;
 // clang-format off
 const uint8_t flipByte[] = {
@@ -107,19 +109,8 @@ sx126x_hal_status_t sx126x_hal_wakeup(const void* context) {
 }
 
 void initDisplay() {
-  if (!Wire.begin(OLED_SDA, OLED_SCL)) {
-    Serial.println("I2C non funziona");
-    while (true)
-      ;
-  }
-  if (!disp.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println("Display non funziona");
-    while (true)
-      ;
-  }
-  disp.setFont(&FreeSansBold12pt7b);
-  disp.setTextSize(1);
-  disp.setTextColor(WHITE);
+  disp.begin();
+  disp.setContrast(contrast);
 }
 
 void clearDisplay() {
@@ -128,69 +119,77 @@ void clearDisplay() {
   char sFreq[] = "400.000";
 
   dtostrf(freq / 1000.0, 6, 3, sFreq);
-  disp.setFont(&FreeSans9pt7b);
+  disp.setFont(&FreeSansBold9pt7b);
   disp.getTextBounds(sFreq, 0, 0, &x1, &y1, &w, &h);
   disp.clearDisplay();
-  disp.setCursor((128 - w) / 2, 28);
+  disp.setCursor((WIDTH - w) / 2, 18);
   disp.print(sFreq);
-  disp.setCursor(18, 60);
-  disp.print("RS41 RSSI");
+  disp.setCursor(8, 44);
+  disp.print("RS41rssi");
 
   disp.display();
 }
 
-void updateDisplay(uint8_t val, int frame, char* serial, bool encrypted) {
+void updateDisplay(uint8_t val, int frame, const char* serial, bool encrypted) {
   int16_t x1, y1;
   uint16_t w, h;
   static char s[10];
 
   disp.clearDisplay();
-  w = constrain(map(val, 0, 256, 0, 128), 0, 128);
-  disp.drawRect(0, 0, 128, 8, WHITE);
-  disp.fillRect(0, 0, w, 8, WHITE);
+  w = constrain(map(val, 0, 256, 0, WIDTH), 0, WIDTH);
+  disp.drawRect(0, 0, WIDTH - 1, 6, BLACK);
+  disp.fillRect(0, 0, w, 6, BLACK);
 
-  disp.setFont(&FreeSansBold12pt7b);
+  disp.setFont(&FreeSansBold9pt7b);
   dtostrf(-val / 2.0, 3, 1, s);
-  disp.setCursor(5, 37);
+  disp.getTextBounds(s, 0, 0, &x1, &y1, &w, &h);
+  disp.setCursor((WIDTH - w) / 2, 22);
   disp.print(s);
 
-  disp.setFont(&FreeSans9pt7b);
-  disp.setCursor(0, 63);
+  disp.setFont(NULL);
+  disp.setCursor(0, 40);
   disp.print(serial);
 
   if (frame > 0) {
+    disp.setFont(&Org_01);
     itoa(frame, s, 10);
     disp.getTextBounds(s, 0, 0, &x1, &y1, &w, &h);
-    disp.setCursor(124 - w, 37);
+    disp.setCursor(25 - w, 35);
     disp.print(s);
   }
 
   if (encrypted) {  //lock
-    disp.fillCircle(117, 52, 5, WHITE);
-    disp.fillCircle(117, 52, 3, BLACK);
-    disp.fillRect(111, 54, 13, 12, WHITE);
+    disp.fillCircle(73, 36, 5, BLACK);
+    disp.fillCircle(73, 36, 3, WHITE);
+    disp.fillRect(67, 38, 13, 12, BLACK);
   }
 
   disp.display();
 }
 
 void editFreq() {
+  const int left = 10, top = 40, w = 10, h = 20;
   int pos = 2;
   char sFreq[] = "400.000";
 
   dtostrf(freq / 1000.0, 6, 3, sFreq);
 
-  disp.setFont(&FreeSansBold12pt7b);
   disp.clearDisplay();
-  disp.setCursor(20, 50);
+
+  disp.setFont(NULL);
+  disp.setCursor(0, 0);
+  disp.print("Nuova freq:");
+
+  disp.setFont(&FreeSansBold9pt7b);
+  disp.setCursor(left, top);
   disp.print(sFreq);
-  disp.drawRect(20 + 13 * 2, 30, 13, 25, WHITE);
+  disp.drawRect(left + w * 2, top - 16, w, h, BLACK);
   disp.display();
 
   while (true) {
     switch (buttonSel.read()) {
       case MD_KeySwitch::KS_PRESS:
-        disp.fillRect(20 + 13 * pos - (pos > 2 ? 6 : 0), 30, 13, 25, BLACK);
+        disp.fillRect(left + w * pos - (pos > 2 ? 6 : 0), top - 16, w, h, WHITE);
         if (++pos == 3) pos = 4;
         if (pos == 7) {
           pos = 2;
@@ -204,9 +203,9 @@ void editFreq() {
           EEPROM.commit();
           return;
         }
-        disp.setCursor(20, 50);
+        disp.setCursor(left, top);
         disp.print(sFreq);
-        disp.drawRect(20 + 13 * pos - (pos > 2 ? 6 : 0), 30, 13, 25, WHITE);
+        disp.drawRect(left + w * pos - (pos > 2 ? 6 : 0), top - 16, w, h, BLACK);
         disp.display();
         break;
     }
@@ -214,10 +213,10 @@ void editFreq() {
       case MD_KeySwitch::KS_PRESS:
       case MD_KeySwitch::KS_RPTPRESS:
         if (++sFreq[pos] > '9' || pos == 2 && sFreq[2] > '5') sFreq[pos] = '0';
-        disp.fillRect(20 + 13 * pos - (pos > 2 ? 6 : 0), 30, 13, 25, BLACK);
-        disp.setCursor(20, 50);
+        disp.fillRect(left + w * pos - (pos > 2 ? 6 : 0), top - 16, w, h, WHITE);
+        disp.setCursor(left, top);
         disp.print(sFreq);
-        disp.drawRect(20 + 13 * pos - (pos > 2 ? 6 : 0), 30, 13, 25, WHITE);
+        disp.drawRect(left + w * pos - (pos > 2 ? 6 : 0), top - 16, w, h, BLACK);
         disp.display();
         break;
     }
@@ -237,7 +236,7 @@ void setup() {
   buttonSel.enableRepeat(false);
   buttonSel.enableLongPress(false);
   buttonUp.enableRepeat(true);
-  buttonUp.enableLongPress(false);
+  buttonUp.enableLongPress(true);
 
   initDisplay();
   clearDisplay();
@@ -372,11 +371,18 @@ void loop() {
   sx126x_pkt_status_gfsk_t pktStatus;
   sx126x_rx_buffer_status_t bufStatus;
 
-  if (buttonUp.read() == MD_KeySwitch::KS_PRESS) {
-    updateDisplay(rssi, frame, serial, encrypted);
-    delay(3000);
-    clearDisplay();
+  switch (buttonUp.read()) {
+    case MD_KeySwitch::KS_LONGPRESS:
+      updateDisplay(rssi, frame, serial, encrypted);
+      delay(3000);
+      clearDisplay();
+      break;
+    case MD_KeySwitch::KS_PRESS:
+      contrast += 5;
+      disp.setContrast(contrast);
+      break;
   }
+  
   if (buttonSel.read() == MD_KeySwitch::KS_PRESS)
     editFreq();
   if (tLastPacket != 0 && millis() - tLastPacket > 3000) {
