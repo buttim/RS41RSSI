@@ -8,6 +8,7 @@
 #include <MD_KeySwitch.h>
 #include <EEPROM.h>
 #include <RS-FEC.h>
+#include <Ticker.h>
 #include "sx126x.h"
 #include "sx126x_regs.h"
 #include "sx126x_hal.h"
@@ -17,8 +18,8 @@
 #define LED_BUILTIN 2
 
 //DISP_DIN=23, DISP_CLK=18
-const int RADIO_SCLK_PIN = 18, RADIO_MISO_PIN = 19, RADIO_MOSI_PIN = 23, RADIO_NSS_PIN = 5, RADIO_BUSY_PIN = 4,
-          RADIO_RST_PIN = 15, RADIO_DIO1_PIN = 17, DISP_DC = 3, DISP_RST = 22, DISP_CS = 21, BUTTON_SEL = 0, BUTTON_UP = 16,
+const int RADIO_SCLK_PIN = 18, RADIO_MISO_PIN = 19, RADIO_MOSI_PIN = 23, RADIO_NSS_PIN = 5, RADIO_BUSY_PIN = 4, RADIO_RST_PIN = 15, RADIO_DIO1_PIN = 17, 
+          LED = 32, BUZZER = 25, DISP_DC = 3, DISP_RST = 22, DISP_CS = 21, BUTTON_SEL = 27, BUTTON_UP = 16,
           PACKET_LENGTH = 312, WIDTH = 84;
 
 SPISettings spiSettings = SPISettings(2E6L, MSBFIRST, SPI_MODE0);
@@ -29,6 +30,7 @@ RS::ReedSolomon<99 + (PACKET_LENGTH - 48) / 2, 24> rs;
 int nBytesRead = 0;
 Adafruit_PCD8544 disp = Adafruit_PCD8544(DISP_DC, DISP_CS, DISP_RST);
 MD_KeySwitch buttonSel(BUTTON_SEL, LOW), buttonUp(BUTTON_UP, LOW);
+Ticker tickBuzzOff, tickSaveContrast;
 char serial[10] = "?????????";
 int frame = 0, rssi;
 uint8_t contrast = 50;
@@ -108,6 +110,14 @@ sx126x_hal_status_t sx126x_hal_wakeup(const void* context) {
   return SX126X_HAL_STATUS_OK;
 }
 
+void bip(int duration, int freq) {
+  analogWriteFrequency(freq);
+  analogWrite(BUZZER, 128);
+  tickBuzzOff.once_ms(duration, []() {
+    analogWrite(BUZZER, 0);
+  });
+}
+
 void initDisplay() {
   disp.begin();
   disp.setContrast(contrast);
@@ -124,7 +134,7 @@ void clearDisplay() {
   disp.clearDisplay();
   disp.setCursor((WIDTH - w) / 2, 18);
   disp.print(sFreq);
-  disp.setCursor(8, 44);
+  disp.setCursor(4, 44);
   disp.print("RS41rssi");
 
   disp.display();
@@ -226,16 +236,20 @@ void editFreq() {
 void setup() {
   Serial.begin(115200);
 
-  EEPROM.begin(sizeof freq);
+  EEPROM.begin(sizeof freq + sizeof contrast);
   freq = EEPROM.readUInt(0);
   if (freq < 400000UL || freq >= 406000UL)
     freq = 403000UL;
+  contrast = EEPROM.read(4);
+  if (contrast==0xFF)
+    contrast=50;
 
-  pinMode(BUTTON_SEL, INPUT);
+  pinMode(BUZZER,OUTPUT);
+  pinMode(BUTTON_SEL, INPUT_PULLUP);
   pinMode(BUTTON_UP, INPUT_PULLUP);
   buttonSel.enableRepeat(false);
   buttonSel.enableLongPress(false);
-  buttonUp.enableRepeat(true);
+  buttonUp.enableRepeat(false);
   buttonUp.enableLongPress(true);
 
   initDisplay();
@@ -243,11 +257,20 @@ void setup() {
 
   SPI.begin(RADIO_SCLK_PIN, RADIO_MISO_PIN, RADIO_MOSI_PIN, RADIO_NSS_PIN);
 
-  pinMode(LED_BUILTIN, OUTPUT);
+  pinMode(LED, OUTPUT);
   pinMode(RADIO_NSS_PIN, OUTPUT);
   pinMode(RADIO_RST_PIN, OUTPUT);
   pinMode(RADIO_BUSY_PIN, INPUT);
   pinMode(RADIO_DIO1_PIN, INPUT);
+
+  digitalWrite(LED,HIGH);
+  analogWriteFrequency(1000);
+  analogWrite(BUZZER,128);
+  delay(200);
+  analogWriteFrequency(2000);
+  delay(500);
+  analogWrite(BUZZER,0);
+  digitalWrite(LED,LOW);
 
   sx126x_mod_params_gfsk_t modParams = {
     .br_in_bps = 4800,
@@ -363,6 +386,7 @@ void processPacket(uint8_t buf[], int rssi) {
     }
   }
   updateDisplay(rssi, frame, serial, encrypted);
+  bip(200,constrain(map(rssi, 255, 0, 150, 9000), 150, 9000));
 }
 
 void loop() {
@@ -380,9 +404,16 @@ void loop() {
     case MD_KeySwitch::KS_PRESS:
       contrast += 5;
       disp.setContrast(contrast);
+      if (tickSaveContrast.active())
+        tickSaveContrast.detach();
+      tickSaveContrast.once_ms(3000,[]() {
+        EEPROM.begin(sizeof freq + sizeof contrast);
+        EEPROM.write(4,contrast);
+        EEPROM.commit();
+      });
       break;
   }
-  
+
   if (buttonSel.read() == MD_KeySwitch::KS_PRESS)
     editFreq();
   if (tLastPacket != 0 && millis() - tLastPacket > 3000) {
@@ -392,7 +423,8 @@ void loop() {
 
   if (digitalRead(RADIO_DIO1_PIN) == HIGH) {
     //Serial.println("SYNC");
-    digitalWrite(LED_BUILTIN, HIGH);
+    digitalWrite(LED, HIGH);
+    bip(100, 2000);
     tLastPacket = tLastRead = millis();
     nBytesRead = 0;
     res = sx126x_clear_irq_status(NULL, SX126X_IRQ_SYNC_WORD_VALID);
@@ -415,7 +447,7 @@ void loop() {
     nBytesRead += read;
     if (sizeof buf - nBytesRead <= 255) {
       res = sx126x_long_pkt_rx_prepare_for_last(NULL, &pktRxState, sizeof buf - nBytesRead);
-      digitalWrite(LED_BUILTIN, LOW);
+      digitalWrite(LED, LOW);
     }
     if (nBytesRead == sizeof buf) {
       sx126x_long_pkt_rx_complete(NULL);
