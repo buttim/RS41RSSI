@@ -33,6 +33,7 @@ MD_KeySwitch buttonSel(BUTTON_SEL, LOW), buttonUp(BUTTON_UP, LOW);
 Ticker tickBuzzOff, tickSaveContrast;
 char serial[10] = "?????????";
 int frame = 0, rssi;
+float lat=0, lng=0, alt=0;
 uint8_t contrast = 50;
 bool encrypted = false;
 // clang-format off
@@ -140,7 +141,7 @@ void clearDisplay() {
   disp.display();
 }
 
-void updateDisplay(uint8_t val, int frame, const char* serial, bool encrypted) {
+void updateDisplay(uint8_t val, int frame, const char* serial, bool encrypted, float lat, float lng, float alt) {
   int16_t x1, y1;
   uint16_t w, h;
   static char s[10];
@@ -160,8 +161,9 @@ void updateDisplay(uint8_t val, int frame, const char* serial, bool encrypted) {
   disp.setCursor(0, 40);
   disp.print(serial);
 
+  disp.setFont(&Org_01);
+
   if (frame > 0) {
-    disp.setFont(&Org_01);
     itoa(frame, s, 10);
     disp.getTextBounds(s, 0, 0, &x1, &y1, &w, &h);
     disp.setCursor(25 - w, 35);
@@ -172,6 +174,17 @@ void updateDisplay(uint8_t val, int frame, const char* serial, bool encrypted) {
     disp.fillCircle(73, 36, 5, BLACK);
     disp.fillCircle(73, 36, 3, WHITE);
     disp.fillRect(67, 38, 13, 12, BLACK);
+  }
+  else {
+    disp.setCursor(40,32);
+    dtostrf(lat,8,5,s);
+    disp.print(s);
+    disp.setCursor(40,38);
+    dtostrf(lng,8,5,s);
+    disp.print(s);
+    disp.setCursor(60,44);
+    itoa((int)alt,s,10);
+    disp.print(s);
   }
 
   disp.display();
@@ -359,7 +372,39 @@ bool correctErrors(uint8_t data[]) {
   return true;
 }
 
+//https://gis.stackexchange.com/questions/265909/converting-from-ecef-to-geodetic-coordinates
+void ecef2wgs84(float x,float y, float z,float &lat, float &lng, float &height) {
+    // WGS84 constants
+    float a = 6378137.0,
+      f = 1.0 / 298.257223563;
+    // derived constants
+    float b = a - f*a,
+      e = sqrt(pow(a,2.0)-pow(b,2.0))/a,
+      clambda = atan2(y,x),
+      p = sqrt(pow(x,2.0)+pow(y,2)),
+      h_old = 0.0;
+    //first guess with h=0 meters
+    float theta = atan2(z,p*(1.0-pow(e,2.0))),
+      cs = cos(theta),
+      sn = sin(theta),
+      N = pow(a,2.0)/sqrt(pow(a*cs,2.0)+pow(b*sn,2.0)),
+      h = p/cs - N;
+    int nMaxLoops=100;
+    while (abs(h-h_old) > 1.0e-6 && nMaxLoops-->0) {
+        h_old = h;
+        theta = atan2(z,p*(1.0-pow(e,2.0)*N/(N+h)));
+        cs = cos(theta);
+        sn = sin(theta);
+        N = pow(a,2.0)/sqrt(pow(a*cs,2.0)+pow(b*sn,2.0));
+        h = p/cs - N;
+    }
+    lng=clambda/M_PI*180;
+    lat=theta/M_PI*180;
+    height=h;
+}
+
 void processPacket(uint8_t buf[], int rssi) {
+  float x, y, z;
   int n = 48 + 1;
 
   frame = 0;
@@ -372,20 +417,31 @@ void processPacket(uint8_t buf[], int rssi) {
       int blockType = buf[n];
       int blockLength = buf[n + 1];
       uint16_t crc = calcCRC16(buf + n + 2, blockLength, CRC16_CCITT_FALSE_POLYNOME, CRC16_CCITT_FALSE_INITIAL, CRC16_CCITT_FALSE_XOR_OUT, CRC16_CCITT_FALSE_REV_IN, CRC16_CCITT_FALSE_REV_OUT);
-      Serial.printf("Blocco 0x%02X, lunghezza %d, CRC: %02X%02X/%02X%02X\n", blockType, blockLength, buf[n + blockLength + 3], buf[n + blockLength + 2], crc >> 8, crc & 0xFF);
-      if (blockType == 0x80 && (crc & 0xFF) == buf[n + blockLength + 2] && (crc >> 8) == buf[n + blockLength + 3])
-        encrypted = true;
-      else if (blockType == 0x79 && (crc & 0xFF) == buf[n + blockLength + 2] && (crc >> 8) == buf[n + blockLength + 3]) {
-        frame = buf[n + 2] + (buf[n + 3] << 8);
-        Serial.printf("\tframe: %d [%.8s]\n", frame, buf + n + 4);
-
-        strncpy(serial, (char*)buf + n + 4, sizeof serial - 1);
+      
+      //Serial.printf("Blocco 0x%02X, lunghezza %d, CRC: %02X%02X/%02X%02X\n", blockType, blockLength, buf[n + blockLength + 3], buf[n + blockLength + 2], crc >> 8, crc & 0xFF);
+      if ((crc & 0xFF) == buf[n + blockLength + 2] && (crc >> 8) == buf[n + blockLength + 3]) {//CRC OK
+        switch (blockType) {
+          case 0x79:  //status
+            frame = buf[n + 2] + (buf[n + 3] << 8);
+            Serial.printf("\tframe: %d [%.8s]\n", frame, buf + n + 4);
+            strncpy(serial, (char*)buf + n + 4, sizeof serial - 1);
+            break;
+          case 0x7B:  //GPSPOS
+            x=buf[n+ 2]+256*(buf[n+ 3]+256*(buf[n+ 4]+256*buf[n+ 5]))/100.0;
+            y=buf[n+ 6]+256*(buf[n+ 7]+256*(buf[n+ 8]+256*buf[n+ 9]))/100.0;
+            z=buf[n+10]+256*(buf[n+11]+256*(buf[n+12]+256*buf[n+13]))/100.0;
+            ecef2wgs84(x, y, z, lat, lng, alt);
+            Serial.printf("\tlat:%f lon:%f h:%f\n",lat,lng,alt);
+            break;
+          case 0x80:  //CRYPTO
+            encrypted = true;
+            break;
+        }
       }
-
       n += blockLength + 4;
     }
   }
-  updateDisplay(rssi, frame, serial, encrypted);
+  updateDisplay(rssi, frame, serial, encrypted, lat, lng, alt);
   bip(200,constrain(map(rssi, 255, 0, 150, 9000), 150, 9000));
 }
 
@@ -397,7 +453,7 @@ void loop() {
 
   switch (buttonUp.read()) {
     case MD_KeySwitch::KS_LONGPRESS:
-      updateDisplay(rssi, frame, serial, encrypted);
+      updateDisplay(rssi, frame, serial, encrypted, lat, lng, alt);
       delay(3000);
       clearDisplay();
       break;
@@ -424,7 +480,7 @@ void loop() {
   if (digitalRead(RADIO_DIO1_PIN) == HIGH) {
     //Serial.println("SYNC");
     digitalWrite(LED, HIGH);
-    bip(100, 2000);
+    bip(50, 2000);
     tLastPacket = tLastRead = millis();
     nBytesRead = 0;
     res = sx126x_clear_irq_status(NULL, SX126X_IRQ_SYNC_WORD_VALID);
