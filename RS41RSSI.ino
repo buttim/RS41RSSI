@@ -18,9 +18,9 @@
 #define LED_BUILTIN 2
 
 //DISP_DIN=23, DISP_CLK=18
-const int RADIO_SCLK_PIN = 18, RADIO_MISO_PIN = 19, RADIO_MOSI_PIN = 23, RADIO_NSS_PIN = 5, RADIO_BUSY_PIN = 4, RADIO_RST_PIN = 15, RADIO_DIO1_PIN = 17, 
+const int RADIO_SCLK_PIN = 18, RADIO_MISO_PIN = 19, RADIO_MOSI_PIN = 23, RADIO_NSS_PIN = 5, RADIO_BUSY_PIN = 4, RADIO_RST_PIN = 15, RADIO_DIO1_PIN = 17,
           LED = 32, BUZZER = 25, DISP_DC = 3, DISP_RST = 22, DISP_CS = 21, BUTTON_SEL = 27, BUTTON_UP = 16,
-          PACKET_LENGTH = 312, WIDTH = 84;
+          PACKET_LENGTH = 312, WIDTH = 84, SERIAL_LENGTH = 8;
 
 SPISettings spiSettings = SPISettings(2E6L, MSBFIRST, SPI_MODE0);
 struct sx126x_long_pkt_rx_state pktRxState;
@@ -31,9 +31,9 @@ int nBytesRead = 0;
 Adafruit_PCD8544 disp = Adafruit_PCD8544(DISP_DC, DISP_CS, DISP_RST);
 MD_KeySwitch buttonSel(BUTTON_SEL, LOW), buttonUp(BUTTON_UP, LOW);
 Ticker tickBuzzOff, tickSaveContrast;
-char serial[10] = "?????????";
+char serial[SERIAL_LENGTH + 1] = "????????";
 int frame = 0, rssi;
-float lat=0, lng=0, alt=0;
+float lat = 0, lng = 0, alt = 0;
 uint8_t contrast = 50;
 bool encrypted = false;
 // clang-format off
@@ -174,16 +174,16 @@ void updateDisplay(uint8_t val, int frame, const char* serial, bool encrypted, f
     disp.fillCircle(73, 36, 5, BLACK);
     disp.fillCircle(73, 36, 3, WHITE);
     disp.fillRect(67, 38, 13, 12, BLACK);
-  }
-  else {
-    disp.setCursor(40,32);
-    dtostrf(lat,8,5,s);
+  } else {
+    disp.setCursor(40, 32);
+    dtostrf(lat, 8, 5, s);
     disp.print(s);
-    disp.setCursor(40,38);
-    dtostrf(lng,8,5,s);
+    disp.setCursor(40, 38);
+    dtostrf(lng, 8, 5, s);
     disp.print(s);
-    disp.setCursor(60,44);
-    itoa((int)alt,s,10);
+    itoa((int)alt, s, 10);
+    disp.getTextBounds(s, 0, 0, &x1, &y1, &w, &h);
+    disp.setCursor(83 - w, 44);
     disp.print(s);
   }
 
@@ -254,10 +254,10 @@ void setup() {
   if (freq < 400000UL || freq >= 406000UL)
     freq = 403000UL;
   contrast = EEPROM.read(4);
-  if (contrast==0xFF)
-    contrast=50;
+  if (contrast == 0xFF)
+    contrast = 50;
 
-  pinMode(BUZZER,OUTPUT);
+  pinMode(BUZZER, OUTPUT);
   pinMode(BUTTON_SEL, INPUT_PULLUP);
   pinMode(BUTTON_UP, INPUT_PULLUP);
   buttonSel.enableRepeat(false);
@@ -276,14 +276,14 @@ void setup() {
   pinMode(RADIO_BUSY_PIN, INPUT);
   pinMode(RADIO_DIO1_PIN, INPUT);
 
-  digitalWrite(LED,HIGH);
+  digitalWrite(LED, HIGH);
   analogWriteFrequency(1000);
-  analogWrite(BUZZER,128);
+  analogWrite(BUZZER, 128);
   delay(200);
   analogWriteFrequency(2000);
   delay(500);
-  analogWrite(BUZZER,0);
-  digitalWrite(LED,LOW);
+  analogWrite(BUZZER, 0);
+  digitalWrite(LED, LOW);
 
   sx126x_mod_params_gfsk_t modParams = {
     .br_in_bps = 4800,
@@ -373,34 +373,34 @@ bool correctErrors(uint8_t data[]) {
 }
 
 //https://gis.stackexchange.com/questions/265909/converting-from-ecef-to-geodetic-coordinates
-void ecef2wgs84(float x,float y, float z,float &lat, float &lng, float &height) {
-    // WGS84 constants
-    float a = 6378137.0,
-      f = 1.0 / 298.257223563;
-    // derived constants
-    float b = a - f*a,
-      e = sqrt(pow(a,2.0)-pow(b,2.0))/a,
-      clambda = atan2(y,x),
-      p = sqrt(pow(x,2.0)+pow(y,2)),
-      h_old = 0.0;
-    //first guess with h=0 meters
-    float theta = atan2(z,p*(1.0-pow(e,2.0))),
-      cs = cos(theta),
-      sn = sin(theta),
-      N = pow(a,2.0)/sqrt(pow(a*cs,2.0)+pow(b*sn,2.0)),
-      h = p/cs - N;
-    int nMaxLoops=100;
-    while (abs(h-h_old) > 1.0e-6 && nMaxLoops-->0) {
-        h_old = h;
-        theta = atan2(z,p*(1.0-pow(e,2.0)*N/(N+h)));
-        cs = cos(theta);
-        sn = sin(theta);
-        N = pow(a,2.0)/sqrt(pow(a*cs,2.0)+pow(b*sn,2.0));
-        h = p/cs - N;
-    }
-    lng=clambda/M_PI*180;
-    lat=theta/M_PI*180;
-    height=h;
+void ecef2wgs84(float x, float y, float z, float& lat, float& lng, float& height) {
+  // WGS84 constants
+  float a = 6378137.0,
+        f = 1.0 / 298.257223563;
+  // derived constants
+  float b = a - f * a,
+        e = sqrt(pow(a, 2.0) - pow(b, 2.0)) / a,
+        clambda = atan2(y, x),
+        p = sqrt(pow(x, 2.0) + pow(y, 2)),
+        h_old = 0.0;
+  //first guess with h=0 meters
+  float theta = atan2(z, p * (1.0 - pow(e, 2.0))),
+        cs = cos(theta),
+        sn = sin(theta),
+        N = pow(a, 2.0) / sqrt(pow(a * cs, 2.0) + pow(b * sn, 2.0)),
+        h = p / cs - N;
+  int nMaxLoops = 100;
+  while (abs(h - h_old) > 1.0e-6 && nMaxLoops-- > 0) {
+    h_old = h;
+    theta = atan2(z, p * (1.0 - pow(e, 2.0) * N / (N + h)));
+    cs = cos(theta);
+    sn = sin(theta);
+    N = pow(a, 2.0) / sqrt(pow(a * cs, 2.0) + pow(b * sn, 2.0));
+    h = p / cs - N;
+  }
+  lng = clambda / M_PI * 180;
+  lat = theta / M_PI * 180;
+  height = h;
 }
 
 void processPacket(uint8_t buf[], int rssi) {
@@ -408,7 +408,7 @@ void processPacket(uint8_t buf[], int rssi) {
   int n = 48 + 1;
 
   frame = 0;
-  strcpy(serial, "?????????");
+  strcpy(serial, "????????");
   encrypted = false;
 
   Serial.printf("RSSI: %d\n", rssi);
@@ -417,21 +417,22 @@ void processPacket(uint8_t buf[], int rssi) {
       int blockType = buf[n];
       int blockLength = buf[n + 1];
       uint16_t crc = calcCRC16(buf + n + 2, blockLength, CRC16_CCITT_FALSE_POLYNOME, CRC16_CCITT_FALSE_INITIAL, CRC16_CCITT_FALSE_XOR_OUT, CRC16_CCITT_FALSE_REV_IN, CRC16_CCITT_FALSE_REV_OUT);
-      
+
       //Serial.printf("Blocco 0x%02X, lunghezza %d, CRC: %02X%02X/%02X%02X\n", blockType, blockLength, buf[n + blockLength + 3], buf[n + blockLength + 2], crc >> 8, crc & 0xFF);
-      if ((crc & 0xFF) == buf[n + blockLength + 2] && (crc >> 8) == buf[n + blockLength + 3]) {//CRC OK
+      if ((crc & 0xFF) == buf[n + blockLength + 2] && (crc >> 8) == buf[n + blockLength + 3]) {  //CRC OK
         switch (blockType) {
           case 0x79:  //status
             frame = buf[n + 2] + (buf[n + 3] << 8);
             Serial.printf("\tframe: %d [%.8s]\n", frame, buf + n + 4);
             strncpy(serial, (char*)buf + n + 4, sizeof serial - 1);
+            serial[sizeof serial - 1] = 0;
             break;
           case 0x7B:  //GPSPOS
-            x=buf[n+ 2]+256*(buf[n+ 3]+256*(buf[n+ 4]+256*buf[n+ 5]))/100.0;
-            y=buf[n+ 6]+256*(buf[n+ 7]+256*(buf[n+ 8]+256*buf[n+ 9]))/100.0;
-            z=buf[n+10]+256*(buf[n+11]+256*(buf[n+12]+256*buf[n+13]))/100.0;
+            x = buf[n + 2] + 256 * (buf[n + 3] + 256 * (buf[n + 4] + 256 * buf[n + 5])) / 100.0;
+            y = buf[n + 6] + 256 * (buf[n + 7] + 256 * (buf[n + 8] + 256 * buf[n + 9])) / 100.0;
+            z = buf[n + 10] + 256 * (buf[n + 11] + 256 * (buf[n + 12] + 256 * buf[n + 13])) / 100.0;
             ecef2wgs84(x, y, z, lat, lng, alt);
-            Serial.printf("\tlat:%f lon:%f h:%f\n",lat,lng,alt);
+            Serial.printf("\tlat:%f lon:%f h:%f\n", lat, lng, alt);
             break;
           case 0x80:  //CRYPTO
             encrypted = true;
@@ -442,7 +443,7 @@ void processPacket(uint8_t buf[], int rssi) {
     }
   }
   updateDisplay(rssi, frame, serial, encrypted, lat, lng, alt);
-  bip(200,constrain(map(rssi, 255, 0, 150, 9000), 150, 9000));
+  bip(200, constrain(map(rssi, 255, 0, 150, 9000), 150, 9000));
 }
 
 void loop() {
@@ -462,9 +463,9 @@ void loop() {
       disp.setContrast(contrast);
       if (tickSaveContrast.active())
         tickSaveContrast.detach();
-      tickSaveContrast.once_ms(3000,[]() {
+      tickSaveContrast.once_ms(3000, []() {
         EEPROM.begin(sizeof freq + sizeof contrast);
-        EEPROM.write(4,contrast);
+        EEPROM.write(4, contrast);
         EEPROM.commit();
       });
       break;
