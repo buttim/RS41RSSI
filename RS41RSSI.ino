@@ -14,21 +14,22 @@
 #include "sx126x_hal.h"
 #include "sx126x_long_pkt.h"
 
-#undef LED_BUILTIN
-#define LED_BUILTIN 2
-
-//DISP_DIN=23, DISP_CLK=18
-const int RADIO_SCLK_PIN = 18, RADIO_MISO_PIN = 19, RADIO_MOSI_PIN = 23, RADIO_NSS_PIN = 5, RADIO_BUSY_PIN = 4, RADIO_RST_PIN = 15, RADIO_DIO1_PIN = 17,
-          LED = 32, BUZZER = 25, DISP_DC = 3, DISP_RST = 22, DISP_CS = 21, BUTTON_SEL = 27, BUTTON_UP = 16,
-          PACKET_LENGTH = 312, WIDTH = 84, SERIAL_LENGTH = 8;
+const int PACKET_LENGTH = 312, WIDTH = 84, SERIAL_LENGTH = 8,
+#ifdef ARDUINO_HELTEC_WIRELESS_MINI_SHELL
+  RADIO_SCLK = 10, RADIO_MISO = 6, RADIO_MOSI = 7, RADIO_NSS = 8, RADIO_BUSY = 4, RADIO_RST = 5, RADIO_DIO1 = 3,
+  BUZZER = 18, DISP_DIN=7, DISP_CLK=10, DISP_DC = 9, DISP_RST = 0, DISP_CS = 1, BUTTON_SEL = 2, BUTTON_UP = 19;
+#else
+  RADIO_SCLK = 18, RADIO_MISO = 19, RADIO_MOSI = 23, RADIO_NSS = 5, RADIO_BUSY = 4, RADIO_RST = 15, RADIO_DIO1 = 17,
+  LED = 32, BUZZER = 25, DISP_DIN=23, DISP_CLK=18, DISP_DC = 3, DISP_RST = 22, DISP_CS = 21, BUTTON_SEL = 27, BUTTON_UP = 16;
+#endif
 
 SPISettings spiSettings = SPISettings(2E6L, MSBFIRST, SPI_MODE0);
 struct sx126x_long_pkt_rx_state pktRxState;
-uint32_t freq = 403000;
+uint32_t freq;
 uint8_t buf[PACKET_LENGTH];
 RS::ReedSolomon<99 + (PACKET_LENGTH - 48) / 2, 24> rs;
 int nBytesRead = 0;
-Adafruit_PCD8544 disp = Adafruit_PCD8544(DISP_DC, DISP_CS, DISP_RST);
+Adafruit_PCD8544 disp = Adafruit_PCD8544(DISP_CLK,DISP_DIN,DISP_DC,DISP_CS,DISP_RST);
 MD_KeySwitch buttonSel(BUTTON_SEL, LOW), buttonUp(BUTTON_UP, LOW);
 Ticker tickBuzzOff, tickSaveContrast;
 char serial[SERIAL_LENGTH + 1] = "????????";
@@ -66,8 +67,8 @@ sx126x_hal_status_t sx126x_hal_write(const void* context, const uint8_t* command
                                      const uint8_t* data, const uint16_t data_length) {
   int i;
 
-  digitalWrite(RADIO_NSS_PIN, LOW);
-  while (digitalRead(RADIO_BUSY_PIN) == HIGH)
+  digitalWrite(RADIO_NSS, LOW);
+  while (digitalRead(RADIO_BUSY) == HIGH)
     ;
   SPI.beginTransaction(spiSettings);
   for (i = 0; i < command_length; i++)
@@ -75,7 +76,7 @@ sx126x_hal_status_t sx126x_hal_write(const void* context, const uint8_t* command
   for (i = 0; i < data_length; i++)
     SPI.transfer(data[i]);
   SPI.endTransaction();
-  digitalWrite(RADIO_NSS_PIN, HIGH);
+  digitalWrite(RADIO_NSS, HIGH);
   return SX126X_HAL_STATUS_OK;
 }
 
@@ -83,8 +84,8 @@ sx126x_hal_status_t sx126x_hal_read(const void* context, const uint8_t* command,
                                     uint8_t* data, const uint16_t data_length) {
   int i;
 
-  digitalWrite(RADIO_NSS_PIN, LOW);
-  while (digitalRead(RADIO_BUSY_PIN) == HIGH)
+  digitalWrite(RADIO_NSS, LOW);
+  while (digitalRead(RADIO_BUSY) == HIGH)
     ;
   SPI.beginTransaction(spiSettings);
   for (i = 0; i < command_length; i++)
@@ -92,27 +93,31 @@ sx126x_hal_status_t sx126x_hal_read(const void* context, const uint8_t* command,
   for (i = 0; i < data_length; i++)
     data[i] = SPI.transfer(0);
   SPI.endTransaction();
-  digitalWrite(RADIO_NSS_PIN, HIGH);
+  digitalWrite(RADIO_NSS, HIGH);
   return SX126X_HAL_STATUS_OK;
 }
 
 sx126x_hal_status_t sx126x_hal_reset(const void* context) {
-  digitalWrite(RADIO_RST_PIN, LOW);
+  digitalWrite(RADIO_RST, LOW);
   delayMicroseconds(120);
-  digitalWrite(RADIO_RST_PIN, HIGH);
+  digitalWrite(RADIO_RST, HIGH);
   return SX126X_HAL_STATUS_OK;
 }
 
 sx126x_hal_status_t sx126x_hal_wakeup(const void* context) {
   Serial.println("WAKEUP");
-  digitalWrite(RADIO_NSS_PIN, LOW);
+  digitalWrite(RADIO_NSS, LOW);
   delay(1);
-  digitalWrite(RADIO_NSS_PIN, HIGH);
+  digitalWrite(RADIO_NSS, HIGH);
   return SX126X_HAL_STATUS_OK;
 }
 
 void bip(int duration, int freq) {
+#ifdef ARDUINO_HELTEC_WIRELESS_MINI_SHELL
+  analogWriteFrequency(BUZZER,freq);
+#else
   analogWriteFrequency(freq);
+#endif
   analogWrite(BUZZER, 128);
   tickBuzzOff.once_ms(duration, []() {
     analogWrite(BUZZER, 0);
@@ -257,6 +262,10 @@ void setup() {
   if (contrast == 0xFF)
     contrast = 50;
 
+  pinMode(RADIO_NSS, OUTPUT);
+  pinMode(RADIO_RST, OUTPUT);
+  digitalWrite(RADIO_NSS,LOW);
+  digitalWrite(RADIO_RST,LOW);
   pinMode(BUZZER, OUTPUT);
   pinMode(BUTTON_SEL, INPUT_PULLUP);
   pinMode(BUTTON_UP, INPUT_PULLUP);
@@ -268,23 +277,34 @@ void setup() {
   initDisplay();
   clearDisplay();
 
-  SPI.begin(RADIO_SCLK_PIN, RADIO_MISO_PIN, RADIO_MOSI_PIN, RADIO_NSS_PIN);
+  SPI.begin(RADIO_SCLK, RADIO_MISO, RADIO_MOSI, RADIO_NSS);
 
+#ifndef ARDUINO_HELTEC_WIRELESS_MINI_SHELL
   pinMode(LED, OUTPUT);
-  pinMode(RADIO_NSS_PIN, OUTPUT);
-  pinMode(RADIO_RST_PIN, OUTPUT);
-  pinMode(RADIO_BUSY_PIN, INPUT);
-  pinMode(RADIO_DIO1_PIN, INPUT);
-
   digitalWrite(LED, HIGH);
+#endif
+  pinMode(RADIO_NSS, OUTPUT);
+  pinMode(RADIO_RST, OUTPUT);
+  pinMode(RADIO_BUSY, INPUT);
+  pinMode(RADIO_DIO1, INPUT);
+
+#ifdef ARDUINO_HELTEC_WIRELESS_MINI_SHELL
+  analogWriteFrequency(BUZZER,1000);
+#else
   analogWriteFrequency(1000);
+#endif
   analogWrite(BUZZER, 128);
   delay(200);
+#ifdef ARDUINO_HELTEC_WIRELESS_MINI_SHELL
+  analogWriteFrequency(BUZZER,2000);
+#else
   analogWriteFrequency(2000);
+#endif
   delay(500);
   analogWrite(BUZZER, 0);
+#ifndef ARDUINO_HELTEC_WIRELESS_MINI_SHELL
   digitalWrite(LED, LOW);
-
+#endif
   sx126x_mod_params_gfsk_t modParams = {
     .br_in_bps = 4800,
     .fdev_in_hz = 3600,                          //?
@@ -478,9 +498,11 @@ void loop() {
     tLastPacket = 0;
   }
 
-  if (digitalRead(RADIO_DIO1_PIN) == HIGH) {
+  if (digitalRead(RADIO_DIO1) == HIGH) {
     //Serial.println("SYNC");
+#ifndef ARDUINO_HELTEC_WIRELESS_MINI_SHELL
     digitalWrite(LED, HIGH);
+#endif
     bip(50, 2000);
     tLastPacket = tLastRead = millis();
     nBytesRead = 0;
@@ -504,7 +526,9 @@ void loop() {
     nBytesRead += read;
     if (sizeof buf - nBytesRead <= 255) {
       res = sx126x_long_pkt_rx_prepare_for_last(NULL, &pktRxState, sizeof buf - nBytesRead);
+#ifndef ARDUINO_HELTEC_WIRELESS_MINI_SHELL
       digitalWrite(LED, LOW);
+#endif
     }
     if (nBytesRead == sizeof buf) {
       sx126x_long_pkt_rx_complete(NULL);
