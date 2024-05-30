@@ -14,6 +14,12 @@
 #include "sx126x_hal.h"
 #include "sx126x_long_pkt.h"
 
+#ifdef ARDUINO_HELTEC_WIRELESS_MINI_SHELL
+#define LED(x)
+#else
+#define LED(x) digitalWrite(LED,x)
+#endif
+
 const int PACKET_LENGTH = 312, WIDTH = 84, SERIAL_LENGTH = 8,
 #ifdef ARDUINO_HELTEC_WIRELESS_MINI_SHELL
   RADIO_SCLK = 10, RADIO_MISO = 6, RADIO_MOSI = 7, RADIO_NSS = 8, RADIO_BUSY = 4, RADIO_RST = 5, RADIO_DIO1 = 3,
@@ -29,7 +35,7 @@ uint32_t freq;
 uint8_t buf[PACKET_LENGTH];
 RS::ReedSolomon<99 + (PACKET_LENGTH - 48) / 2, 24> rs;
 int nBytesRead = 0;
-Adafruit_PCD8544 disp = Adafruit_PCD8544(DISP_CLK,DISP_DIN,DISP_DC,DISP_CS,DISP_RST);
+Adafruit_PCD8544 disp = Adafruit_PCD8544(/*DISP_CLK,DISP_DIN,*/DISP_DC,DISP_CS,DISP_RST);
 MD_KeySwitch buttonSel(BUTTON_SEL, LOW), buttonUp(BUTTON_UP, LOW);
 Ticker tickBuzzOff, tickSaveContrast;
 char serial[SERIAL_LENGTH + 1] = "????????";
@@ -266,9 +272,9 @@ void setup() {
   pinMode(BUTTON_SEL, INPUT_PULLUP);
   pinMode(BUTTON_UP, INPUT_PULLUP);
   buttonSel.enableRepeat(false);
-  buttonSel.enableLongPress(false);
-  buttonUp.enableRepeat(false);
-  buttonUp.enableLongPress(true);
+  buttonSel.enableLongPress(true);
+  buttonUp.enableRepeat(true);
+  buttonUp.enableLongPress(false);
 
   initDisplay();
   clearDisplay();
@@ -277,8 +283,8 @@ void setup() {
 
 #ifndef ARDUINO_HELTEC_WIRELESS_MINI_SHELL
   pinMode(LED, OUTPUT);
-  digitalWrite(LED, HIGH);
 #endif
+  LED(HIGH);
   pinMode(RADIO_NSS, OUTPUT);
   pinMode(RADIO_RST, OUTPUT);
   pinMode(RADIO_BUSY, INPUT);
@@ -290,9 +296,7 @@ void setup() {
   analogWriteFrequency(BUZZER,2000);
   delay(500);
   analogWrite(BUZZER, 0);
-#ifndef ARDUINO_HELTEC_WIRELESS_MINI_SHELL
-  digitalWrite(LED, LOW);
-#endif
+  LED(LOW);
   sx126x_mod_params_gfsk_t modParams = {
     .br_in_bps = 4800,
     .fdev_in_hz = 3600,                          //?
@@ -461,13 +465,9 @@ void loop() {
   sx126x_rx_buffer_status_t bufStatus;
 
   switch (buttonUp.read()) {
-    case MD_KeySwitch::KS_LONGPRESS:
-      updateDisplay(rssi, frame, serial, encrypted, lat, lng, alt);
-      delay(3000);
-      clearDisplay();
-      break;
+    case MD_KeySwitch::KS_RPTPRESS:
     case MD_KeySwitch::KS_PRESS:
-      contrast += 5;
+      contrast += 4;
       disp.setContrast(contrast);
       if (tickSaveContrast.active())
         tickSaveContrast.detach();
@@ -479,8 +479,17 @@ void loop() {
       break;
   }
 
-  if (buttonSel.read() == MD_KeySwitch::KS_PRESS)
-    editFreq();
+  switch (buttonSel.read()) {
+    case MD_KeySwitch::KS_PRESS:
+      editFreq();
+      break;
+    case MD_KeySwitch::KS_LONGPRESS:
+      updateDisplay(rssi, frame, serial, encrypted, lat, lng, alt);
+      delay(3000);
+      clearDisplay();
+      break;
+  }
+    
   if (tLastPacket != 0 && millis() - tLastPacket > 3000) {
     clearDisplay();
     tLastPacket = 0;
@@ -514,9 +523,7 @@ void loop() {
     nBytesRead += read;
     if (sizeof buf - nBytesRead <= 255) {
       res = sx126x_long_pkt_rx_prepare_for_last(NULL, &pktRxState, sizeof buf - nBytesRead);
-#ifndef ARDUINO_HELTEC_WIRELESS_MINI_SHELL
-      digitalWrite(LED, LOW);
-#endif
+      LED(LOW);
     }
     if (nBytesRead == sizeof buf) {
       sx126x_long_pkt_rx_complete(NULL);
