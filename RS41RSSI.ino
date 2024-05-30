@@ -113,11 +113,7 @@ sx126x_hal_status_t sx126x_hal_wakeup(const void* context) {
 }
 
 void bip(int duration, int freq) {
-#ifdef ARDUINO_HELTEC_WIRELESS_MINI_SHELL
   analogWriteFrequency(BUZZER,freq);
-#else
-  analogWriteFrequency(freq);
-#endif
   analogWrite(BUZZER, 128);
   tickBuzzOff.once_ms(duration, []() {
     analogWrite(BUZZER, 0);
@@ -288,18 +284,10 @@ void setup() {
   pinMode(RADIO_BUSY, INPUT);
   pinMode(RADIO_DIO1, INPUT);
 
-#ifdef ARDUINO_HELTEC_WIRELESS_MINI_SHELL
   analogWriteFrequency(BUZZER,1000);
-#else
-  analogWriteFrequency(1000);
-#endif
   analogWrite(BUZZER, 128);
   delay(200);
-#ifdef ARDUINO_HELTEC_WIRELESS_MINI_SHELL
   analogWriteFrequency(BUZZER,2000);
-#else
-  analogWriteFrequency(2000);
-#endif
   delay(500);
   analogWrite(BUZZER, 0);
 #ifndef ARDUINO_HELTEC_WIRELESS_MINI_SHELL
