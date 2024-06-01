@@ -23,7 +23,7 @@
 const int PACKET_LENGTH = 312, WIDTH = 84, SERIAL_LENGTH = 8,
 #if defined(ARDUINO_HELTEC_WIRELESS_MINI_SHELL)
           RADIO_SCLK = 10, RADIO_MOSI = 7, RADIO_MISO = 6, RADIO_NSS = 8, RADIO_BUSY = 4, RADIO_RST = 5, RADIO_DIO1 = 3,
-          DISP_CLK = 10, DISP_DIN = 7, DISP_DC = 9, DISP_CE = 1, DISP_RST = -1, BUZZER = 18, BUTTON_SEL = 2, BUTTON_UP = 19;
+          DISP_CLK = 10, DISP_DIN = 7, DISP_DC = 0, DISP_CE = 1, DISP_RST = -1, BUZZER = 2, BUTTON_SEL = 19, BUTTON_UP = 18;
 #else
 #if defined(ARDUINO_ESP32C3_DEV)
           RADIO_SCLK = 10, RADIO_MOSI = 7, RADIO_MISO = 6, RADIO_NSS = 8, RADIO_BUSY = 4, RADIO_RST = 5, RADIO_DIO1 = 3,
@@ -139,7 +139,7 @@ void initDisplay() {
   disp.setContrast(contrast);
 }
 
-void clearDisplay() {
+void clearDisplay(int val) {
   int16_t x1, y1;
   uint16_t w, h;
   char sFreq[] = "400.000";
@@ -148,7 +148,8 @@ void clearDisplay() {
   disp.setFont(&FreeSansBold9pt7b);
   disp.getTextBounds(sFreq, 0, 0, &x1, &y1, &w, &h);
   disp.clearDisplay();
-  disp.setCursor((WIDTH - w) / 2, 18);
+  drawBar(val);
+  disp.setCursor((WIDTH - w) / 2, 25);
   disp.print(sFreq);
   disp.setCursor(4, 44);
   disp.print("RS41rssi");
@@ -156,18 +157,22 @@ void clearDisplay() {
   disp.display();
 }
 
-void updateDisplay(uint8_t val, int frame, const char* serial, bool encrypted, float lat, float lng, float alt) {
+void drawBar(uint8_t val) {
+  uint16_t w = constrain(map(val - 128, 0, 128, 0, WIDTH), 0, WIDTH);
+  disp.drawRect(0, 0, WIDTH - 1, 6, BLACK);
+  disp.fillRect(0, 0, w, 6, BLACK);
+}
+
+void updateDisplay(int val, int frame, const char* serial, bool encrypted, float lat, float lng, float alt) {
   int16_t x1, y1;
   uint16_t w, h;
   static char s[10];
 
   disp.clearDisplay();
-  w = constrain(map(val, 0, 256, 0, WIDTH), 0, WIDTH);
-  disp.drawRect(0, 0, WIDTH - 1, 6, BLACK);
-  disp.fillRect(0, 0, w, 6, BLACK);
+  drawBar(val);
 
   disp.setFont(&FreeSansBold9pt7b);
-  dtostrf(-val / 2.0, 3, 1, s);
+  dtostrf(val, 3, 1, s);
   disp.getTextBounds(s, 0, 0, &x1, &y1, &w, &h);
   disp.setCursor((WIDTH - w) / 2, 22);
   disp.print(s);
@@ -233,7 +238,7 @@ void editFreq() {
           pos = 2;
           freq = (int)roundf(1000 * atof(sFreq));
           Serial.printf("nuova frequenza: %d\n", freq);
-          clearDisplay();
+          clearDisplay(0);
           sx126x_long_pkt_rx_complete(NULL);
           sx126x_set_rf_freq(NULL, freq * 1000UL);
           sx126x_long_pkt_set_rx_with_timeout_in_rtc_step(NULL, &pktRxState, SX126X_RX_CONTINUOUS);
@@ -308,7 +313,7 @@ void setup() {
   SPI.begin(RADIO_SCLK, RADIO_MISO, RADIO_MOSI /*, RADIO_NSS*/);
 
   initDisplay();
-  clearDisplay();
+  clearDisplay(0);
 
   sx126x_mod_params_gfsk_t modParams = {
     .br_in_bps = 4800,
@@ -457,7 +462,7 @@ void processPacket(uint8_t buf[], int rssi) {
             y = buf[n + 6] + 256 * (buf[n + 7] + 256 * (buf[n + 8] + 256 * buf[n + 9])) / 100.0;
             z = buf[n + 10] + 256 * (buf[n + 11] + 256 * (buf[n + 12] + 256 * buf[n + 13])) / 100.0;
             ecef2wgs84(x, y, z, lat, lng, alt);
-            Serial.printf("\tlat:%f lon:%f h:%f\n", lat, lng, alt);
+            Serial.printf("\tlat:%f lon:%f h:%f rssi:%d\n", lat, lng, alt, rssi);
             break;
           case 0x80:  //CRYPTO
             encrypted = true;
@@ -472,7 +477,7 @@ void processPacket(uint8_t buf[], int rssi) {
 }
 
 void loop() {
-  static uint64_t tLastRead = 0, tLastPacket = 0;
+  static uint64_t tLastRead = 0, tLastPacket = 0, tLastRSSI = 0;
   sx126x_status_t res;
   sx126x_pkt_status_gfsk_t pktStatus;
   sx126x_rx_buffer_status_t bufStatus;
@@ -499,12 +504,12 @@ void loop() {
     case MD_KeySwitch::KS_LONGPRESS:
       updateDisplay(rssi, frame, serial, encrypted, lat, lng, alt);
       delay(3000);
-      clearDisplay();
+      clearDisplay(0);
       break;
   }
 
   if (tLastPacket != 0 && millis() - tLastPacket > 3000) {
-    clearDisplay();
+    clearDisplay(0);
     tLastPacket = 0;
   }
 
@@ -550,6 +555,14 @@ void loop() {
       sx126x_get_gfsk_pkt_status(NULL, &pktStatus);
       rssi = pktStatus.rssi_sync;
       processPacket(buf, rssi);
+    }
+  } else {
+    if ((tLastPacket == 0 || millis() - tLastPacket > 3000) && (tLastRSSI == 0 || millis() - tLastRSSI > 500)) {
+      int16_t rssi;
+      sx126x_get_rssi_inst(NULL, &rssi);
+      //Serial.printf("rssi: %d\n", rssi);
+      tLastRSSI = millis();
+      clearDisplay(rssi);
     }
   }
 }
