@@ -9,6 +9,9 @@
 #include <EEPROM.h>
 #include <RS-FEC.h>
 #include <Ticker.h>
+#include <esp_bt_main.h>
+#include <esp_bt_device.h>
+#include <BluetoothSerial.h>
 #include "sx126x.h"
 #include "sx126x_regs.h"
 #include "sx126x_hal.h"
@@ -43,11 +46,12 @@ int nBytesRead = 0;
 Adafruit_PCD8544 disp = Adafruit_PCD8544(DISP_DC, DISP_CE, DISP_RST, &SPI);
 MD_KeySwitch buttonSel(BUTTON_SEL, LOW), buttonUp(BUTTON_UP, LOW);
 Ticker tickBuzzOff, tickSaveContrast;
+BluetoothSerial bt;
 char serial[SERIAL_LENGTH + 1] = "????????";
 int frame = 0, rssi;
 float lat = 0, lng = 0, alt = 0;
 uint8_t contrast;
-bool encrypted = false;
+bool encrypted = false, mute = false;
 // clang-format off
 const uint8_t flipByte[] = {
 		0x00, 0x80, 0x40, 0xC0, 0x20, 0xA0, 0x60, 0xE0, 0x10, 0x90, 0x50, 0xD0, 0x30, 0xB0, 0x70, 0xF0,
@@ -116,7 +120,6 @@ sx126x_hal_status_t sx126x_hal_reset(const void* context) {
 }
 
 sx126x_hal_status_t sx126x_hal_wakeup(const void* context) {
-  Serial.println("WAKEUP");
   digitalWrite(RADIO_NSS, LOW);
   delay(1);
   digitalWrite(RADIO_NSS, HIGH);
@@ -124,6 +127,7 @@ sx126x_hal_status_t sx126x_hal_wakeup(const void* context) {
 }
 
 void bip(int duration, int freq) {
+  if (mute) return;
   analogWriteFrequency(BUZZER, freq);
   analogWrite(BUZZER, 128);
   tickBuzzOff.once_ms(duration, []() {
@@ -157,8 +161,17 @@ void clearDisplay(int val) {
   disp.display();
 }
 
+long mappa(long x, long in_min, long in_max, long out_min, long out_max) {
+  const long run = in_max - in_min;
+  if (run == 0)
+    return -1;
+  const long rise = out_max - out_min;
+  const long delta = x - in_min;
+  return (delta * rise) / run + out_min;
+}
+
 void drawBar(uint8_t val) {
-  uint16_t w = constrain(map(val - 128, 0, 128, 0, WIDTH), 0, WIDTH);
+  uint16_t w = constrain(mappa(val - 128, 0, 128, 0, WIDTH), 0, WIDTH);
   disp.drawRect(0, 0, WIDTH - 1, 6, BLACK);
   disp.fillRect(0, 0, w, 6, BLACK);
 }
@@ -276,8 +289,44 @@ void readEEPROM() {
     contrast = 50;
 }
 
+bool initBluetooth() {
+  if (!btStart()) {
+    Serial.println("Failed to initialize controller");
+    return false;
+  }
+
+  if (esp_bluedroid_init() != ESP_OK) {
+    Serial.println("Failed to initialize bluedroid");
+    return false;
+  }
+
+  if (esp_bluedroid_enable() != ESP_OK) {
+    Serial.println("Failed to enable bluedroid");
+    return false;
+  }
+  return true;
+}
+
 void setup() {
+  char s[20];
+  
   Serial.begin(115200);
+
+  initBluetooth();
+
+  const uint8_t *add = esp_bt_dev_get_address();
+  snprintf(s, sizeof s, "RS41RSSI_%02X%02X%02X%02X%02X%02X", add[0], add[1], add[2], add[3], add[4], add[5]);
+
+  bt.begin(s);
+  bt.setTimeout(0);
+  bt.onData([](const uint8_t *buf, int size) {
+    for (int i=0;i<size;i++) 
+      switch(toupper(buf[i])) {
+        case 'B':
+          mute=!mute;
+          break;
+      }
+  });
 
 #ifndef ARDUINO_HELTEC_WIRELESS_MINI_SHELL
   pinMode(LED, OUTPUT);
@@ -359,7 +408,6 @@ void setup() {
   res = sx126x_long_pkt_set_rx_with_timeout_in_rtc_step(NULL, &pktRxState, SX126X_RX_CONTINUOUS);
   Serial.printf("sx126x_long_pkt_set_rx %d\n", res);
   res = sx126x_clear_device_errors(NULL);
-  char s[17] = "";
   res = sx126x_read_register(NULL, 0x320, (uint8_t*)s, 16);
   Serial.printf("device ID: %s\n", s);
 }
@@ -441,7 +489,10 @@ void processPacket(uint8_t buf[], int rssi) {
   strcpy(serial, "????????");
   encrypted = false;
 
-  Serial.printf("RSSI: %d\n", rssi);
+  Serial.printf("RSSI: %d", rssi);
+  if (bt.connected())
+    bt.printf("%d", rssi);
+
   if (correctErrors(buf) && buf[48] == 0x0F) {
     while (n < PACKET_LENGTH) {
       int blockType = buf[n];
@@ -453,7 +504,9 @@ void processPacket(uint8_t buf[], int rssi) {
         switch (blockType) {
           case 0x79:  //status
             frame = buf[n + 2] + (buf[n + 3] << 8);
-            Serial.printf("\tframe: %d [%.8s]\n", frame, buf + n + 4);
+            Serial.printf(" frame: %d [%.8s]", frame, buf + n + 4);
+            if (bt.connected())
+              bt.printf(",%d,%.8s", frame, buf + n + 4);
             strncpy(serial, (char*)buf + n + 4, sizeof serial - 1);
             serial[sizeof serial - 1] = 0;
             break;
@@ -462,7 +515,9 @@ void processPacket(uint8_t buf[], int rssi) {
             y = buf[n + 6] + 256 * (buf[n + 7] + 256 * (buf[n + 8] + 256 * buf[n + 9])) / 100.0;
             z = buf[n + 10] + 256 * (buf[n + 11] + 256 * (buf[n + 12] + 256 * buf[n + 13])) / 100.0;
             ecef2wgs84(x, y, z, lat, lng, alt);
-            Serial.printf("\tlat:%f lon:%f h:%f rssi:%d\n", lat, lng, alt, rssi);
+            Serial.printf(" lat:%f lon:%f h:%f", lat, lng, alt);
+            if (bt.connected())
+              bt.printf(",%f,%f,%.1f", lat, lng, alt);
             break;
           case 0x80:  //CRYPTO
             encrypted = true;
@@ -472,8 +527,11 @@ void processPacket(uint8_t buf[], int rssi) {
       n += blockLength + 4;
     }
   }
+  Serial.println();
+  if (bt.connected())
+    bt.println();
   updateDisplay(rssi, frame, serial, encrypted, lat, lng, alt);
-  bip(200, constrain(map(rssi, 255, 0, 150, 9000), 150, 9000));
+  bip(200, constrain(mappa(rssi, 255, 0, 150, 9000), 150, 9000));
 }
 
 void loop() {
