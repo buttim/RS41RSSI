@@ -1,4 +1,7 @@
 #include <stdint.h>
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_HMC5883_U.h>
 #include <SPI.h>
 #include <CRC.h>
 #include <Adafruit_GFX.h>
@@ -17,13 +20,8 @@
 #include "sx126x_hal.h"
 #include "sx126x_long_pkt.h"
 
-#ifdef ARDUINO_HELTEC_WIRELESS_MINI_SHELL
-#define LED(x)
-#else
-#define LED(x) digitalWrite(LED, x)
-#endif
-
-const int PACKET_LENGTH = 312, WIDTH = 84, SERIAL_LENGTH = 8,
+//SDA, SCL => 22, 21
+const int PACKET_LENGTH = 312, WIDTH = 84, HEIGHT = 48, SERIAL_LENGTH = 8,
 #if defined(ARDUINO_HELTEC_WIRELESS_MINI_SHELL)
           RADIO_SCLK = 10, RADIO_MOSI = 7, RADIO_MISO = 6, RADIO_NSS = 8, RADIO_BUSY = 4, RADIO_RST = 5, RADIO_DIO1 = 3,
           DISP_CLK = 10, DISP_DIN = 7, DISP_DC = 0, DISP_CE = 1, DISP_RST = -1, BUZZER = 2, BUTTON_SEL = 19, BUTTON_UP = 18;
@@ -33,24 +31,30 @@ const int PACKET_LENGTH = 312, WIDTH = 84, SERIAL_LENGTH = 8,
           DISP_CLK = 10, DISP_DIN = 7, DISP_DC = 21, DISP_CE = 2, DISP_RST = -1, BUZZER = 0, BUTTON_SEL = 20, BUTTON_UP = 1, LED = 9;
 #else
           RADIO_SCLK = 18, RADIO_MISO = 19, RADIO_MOSI = 23, RADIO_NSS = 5, RADIO_BUSY = 4, RADIO_RST = 15, RADIO_DIO1 = 17,
-          DISP_CLK = 18, DISP_DIN = 23, DISP_DC = 3, DISP_CE = 21, DISP_RST = 22, BUZZER = 25, BUTTON_SEL = 27, BUTTON_UP = 16, LED = 32;
+          DISP_CLK = 18, DISP_DIN = 23, DISP_DC = 3, DISP_CE = 13, DISP_RST = -1, BUZZER = 25, BUTTON_SEL = 27, BUTTON_UP = 16, LED = 32;
 #endif
+#endif
+
+#ifdef ARDUINO_HELTEC_WIRELESS_MINI_SHELL
+#define LED(x)
+#else
+#define LED(x) digitalWrite(LED, x)
 #endif
 
 SPISettings spiSettings = SPISettings(4E6L, MSBFIRST, SPI_MODE0);
 struct sx126x_long_pkt_rx_state pktRxState;
-uint32_t freq;
-uint8_t buf[PACKET_LENGTH];
 RS::ReedSolomon<99 + (PACKET_LENGTH - 48) / 2, 24> rs;
-int nBytesRead = 0;
 Adafruit_PCD8544 disp = Adafruit_PCD8544(DISP_DC, DISP_CE, DISP_RST, &SPI);
 MD_KeySwitch buttonSel(BUTTON_SEL, LOW), buttonUp(BUTTON_UP, LOW);
 Ticker tickBuzzOff, tickSaveContrast;
 BluetoothSerial bt;
+Adafruit_HMC5883_Unified mag = Adafruit_HMC5883_Unified(12345);
 char serial[SERIAL_LENGTH + 1] = "????????";
-int frame = 0, rssi;
-float lat = 0, lng = 0, alt = 0;
-uint8_t contrast;
+uint32_t freq;
+uint8_t buf[PACKET_LENGTH], contrast;
+int frame = 0, rssi, nBytesRead = 0;
+float lat = 0, lng = 0, alt = 0,
+      offX = 24.50, offY = 35.70, scaleX = 17.27, scaleY = 17.73, heading;
 bool encrypted = false, mute = false;
 // clang-format off
 const uint8_t flipByte[] = {
@@ -144,19 +148,33 @@ void initDisplay() {
 }
 
 void clearDisplay(int val) {
-  int16_t x1, y1;
-  uint16_t w, h;
-  char sFreq[] = "400.000";
+  //int16_t x1, y1;
+  //uint16_t w, h;
+  char s[] = "400.000";
 
-  dtostrf(freq / 1000.0, 6, 3, sFreq);
+  dtostrf(freq / 1000.0, 6, 3, s);
   disp.setFont(&FreeSansBold9pt7b);
-  disp.getTextBounds(sFreq, 0, 0, &x1, &y1, &w, &h);
+  //disp.getTextBounds(s, 0, 0, &x1, &y1, &w, &h);
   disp.clearDisplay();
   drawBar(val);
-  disp.setCursor((WIDTH - w) / 2, 25);
-  disp.print(sFreq);
-  disp.setCursor(4, 44);
-  disp.print("RS41rssi");
+  disp.setCursor(0, HEIGHT - 1);
+  disp.print(s);
+  disp.setFont(&Org_01);
+  disp.setCursor(0, 20);
+  disp.print("RS41\nRSSI");
+}
+
+void displayCompass() {
+  int16_t x1, y1;
+  uint16_t w, h;
+  char s[5];
+
+  disp.fillRect(50, 10, WIDTH - 50, 14, WHITE);  //clear
+  itoa((int)heading, s, 10);
+  disp.setFont(&FreeSansBold9pt7b);
+  disp.getTextBounds(s, 0, 0, &x1, &y1, &w, &h);
+  disp.setCursor(WIDTH - 2 - w, 22);
+  disp.print(s);
 
   disp.display();
 }
@@ -176,18 +194,18 @@ void drawBar(uint8_t val) {
   disp.fillRect(0, 0, w, 6, BLACK);
 }
 
-void updateDisplay(int val, int frame, const char* serial, bool encrypted, float lat, float lng, float alt) {
+void updateDisplay(int rssi, int frame, const char* serial, bool encrypted, float lat, float lng, float alt) {
   int16_t x1, y1;
   uint16_t w, h;
   static char s[10];
 
   disp.clearDisplay();
-  drawBar(val);
+  drawBar(rssi);
 
   disp.setFont(&FreeSansBold9pt7b);
-  dtostrf(val, 3, 1, s);
+  dtostrf(rssi, 3, 1, s);
   disp.getTextBounds(s, 0, 0, &x1, &y1, &w, &h);
-  disp.setCursor((WIDTH - w) / 2, 22);
+  disp.setCursor(42 - w, 22);
   disp.print(s);
 
   disp.setFont(NULL);
@@ -221,6 +239,8 @@ void updateDisplay(int val, int frame, const char* serial, bool encrypted, float
   }
 
   disp.display();
+
+  displayCompass();
 }
 
 void editFreq() {
@@ -234,7 +254,7 @@ void editFreq() {
 
   disp.setFont(NULL);
   disp.setCursor(0, 0);
-  disp.print("Nuova freq:");
+  disp.print("Nuova\nfrequenza:");
 
   disp.setFont(&FreeSansBold9pt7b);
   disp.setCursor(left, top);
@@ -255,8 +275,7 @@ void editFreq() {
           sx126x_long_pkt_rx_complete(NULL);
           sx126x_set_rf_freq(NULL, freq * 1000UL);
           sx126x_long_pkt_set_rx_with_timeout_in_rtc_step(NULL, &pktRxState, SX126X_RX_CONTINUOUS);
-          EEPROM.writeUInt(0, freq);
-          EEPROM.commit();
+          writeEEPROM();
           return;
         }
         disp.setCursor(left, top);
@@ -280,13 +299,42 @@ void editFreq() {
 }
 
 void readEEPROM() {
-  EEPROM.begin(sizeof freq + sizeof contrast);
-  freq = EEPROM.readUInt(0);
+  int n = 0;
+  EEPROM.begin(sizeof freq + sizeof contrast + 4 * sizeof(float));
+  freq = EEPROM.readUInt(n);
   if (freq < 400000UL || freq >= 406000UL)
     freq = 403000UL;
-  contrast = EEPROM.read(4);
+  n += sizeof freq;
+  contrast = EEPROM.read(n);
   if (contrast == 0xFF)
     contrast = 50;
+  else {
+    n += sizeof contrast;
+    offX = EEPROM.readFloat(n);
+    n += sizeof offX;
+    offY = EEPROM.readFloat(n);
+    n += sizeof offY;
+    scaleX = EEPROM.readFloat(n);
+    n += sizeof scaleX;
+    scaleY = EEPROM.readFloat(n);
+  }
+}
+
+void writeEEPROM() {
+  int n = 0;
+  EEPROM.begin(sizeof freq + sizeof contrast + 4 * sizeof(float));
+  EEPROM.writeUInt(n, freq);
+  n += sizeof freq;
+  EEPROM.write(n, contrast);
+  n += sizeof contrast;
+  EEPROM.writeFloat(n, offX);
+  n += sizeof offX;
+  EEPROM.writeFloat(n, offY);
+  n += sizeof offY;
+  EEPROM.writeFloat(n, scaleX);
+  n += sizeof scaleX;
+  EEPROM.writeFloat(n, scaleY);
+  EEPROM.commit();
 }
 
 bool initBluetooth() {
@@ -307,23 +355,66 @@ bool initBluetooth() {
   return true;
 }
 
+void calibrate() {
+  disp.clearDisplay();
+  disp.setCursor(5, 15);
+  disp.setFont(&FreeSansBold9pt7b);
+  disp.print("calibrate");
+  disp.display();
+
+  const int calibrationSteps = 3000;
+  float maxX = -9E6, maxY = -9E6, minX = 9E6, minY = 9E6, sumX = 0, sumY = 0;
+  sensors_event_t event;
+
+  for (int i = 0; i < calibrationSteps; i++) {
+    mag.getEvent(&event);
+    sumX += event.magnetic.x;
+    sumY += event.magnetic.y;
+    if (event.magnetic.x < minX) minX = event.magnetic.x;
+    if (event.magnetic.y < minY) minY = event.magnetic.y;
+    if (event.magnetic.x > maxX) maxX = event.magnetic.x;
+    if (event.magnetic.y > maxY) maxY = event.magnetic.y;
+    Serial.printf("%.2f,%.2f\n", event.magnetic.x, event.magnetic.y);
+    delay(10);
+
+    uint16_t w = mappa(i, 0, calibrationSteps, 0, WIDTH);
+    disp.drawRect(0, 35, WIDTH - 1, 12, BLACK);
+    disp.fillRect(0, 35, w, 12, BLACK);
+    disp.display();
+    //if (i%100==0) Serial.printf("%d/%d\n",i,calibrationSteps);
+  }
+  scaleX = (maxX - minX) / 2;
+  scaleY = (maxY - minY) / 2;
+  offX = sumX / calibrationSteps;
+  offY = sumY / calibrationSteps;
+  Serial.printf("***** offX:%.2f, offY:%.2f, scaleX:%.2f,scaleY=%.2f\n", offX, offY, scaleX, scaleY);
+  writeEEPROM();
+}
+
 void setup() {
   char s[20];
-  
+
   Serial.begin(115200);
 
   initBluetooth();
+  if (!mag.begin()) {
+    Serial.println("No HMC5883 detected");
+    while (1)
+      ;
+  }
+  mag.setMagGain(HMC5883_MAGGAIN_1_3);
+  mag.enableAutoRange(false);
 
-  const uint8_t *add = esp_bt_dev_get_address();
+  const uint8_t* add = esp_bt_dev_get_address();
   snprintf(s, sizeof s, "RS41RSSI_%02X%02X%02X%02X%02X%02X", add[0], add[1], add[2], add[3], add[4], add[5]);
 
   bt.begin(s);
   bt.setTimeout(0);
-  bt.onData([](const uint8_t *buf, int size) {
-    for (int i=0;i<size;i++) 
-      switch(toupper(buf[i])) {
+  bt.onData([](const uint8_t* buf, int size) {
+    for (int i = 0; i < size; i++)
+      switch (toupper(buf[i])) {
         case 'B':
-          mute=!mute;
+          mute = !mute;
           break;
       }
   });
@@ -342,6 +433,7 @@ void setup() {
   pinMode(BUZZER, OUTPUT);
   pinMode(BUTTON_SEL, INPUT_PULLUP);
   pinMode(BUTTON_UP, INPUT_PULLUP);
+
   buttonSel.enableRepeat(false);
   buttonSel.enableLongPress(true);
   buttonUp.enableRepeat(true);
@@ -363,6 +455,9 @@ void setup() {
 
   initDisplay();
   clearDisplay(0);
+
+  if (digitalRead(BUTTON_SEL) == LOW)
+    calibrate();
 
   sx126x_mod_params_gfsk_t modParams = {
     .br_in_bps = 4800,
@@ -491,7 +586,7 @@ void processPacket(uint8_t buf[], int rssi) {
 
   Serial.printf("RSSI: %d", rssi);
   if (bt.connected())
-    bt.printf("%d", rssi);
+    bt.printf("%d,%d", (int)heading, rssi);
 
   if (correctErrors(buf) && buf[48] == 0x0F) {
     while (n < PACKET_LENGTH) {
@@ -535,7 +630,7 @@ void processPacket(uint8_t buf[], int rssi) {
 }
 
 void loop() {
-  static uint64_t tLastRead = 0, tLastPacket = 0, tLastRSSI = 0;
+  static uint64_t tLastRead = 0, tLastPacket = 0, tLastRSSI = 0, tLastCompass = 0;
   sx126x_status_t res;
   sx126x_pkt_status_gfsk_t pktStatus;
   sx126x_rx_buffer_status_t bufStatus;
@@ -548,9 +643,7 @@ void loop() {
       if (tickSaveContrast.active())
         tickSaveContrast.detach();
       tickSaveContrast.once_ms(3000, []() {
-        EEPROM.begin(sizeof freq + sizeof contrast);
-        EEPROM.write(4, contrast);
-        EEPROM.commit();
+        writeEEPROM();
       });
       break;
   }
@@ -573,9 +666,7 @@ void loop() {
 
   if (digitalRead(RADIO_DIO1) == HIGH) {
     //Serial.println("SYNC");
-#ifndef ARDUINO_HELTEC_WIRELESS_MINI_SHELL
-    digitalWrite(LED, HIGH);
-#endif
+    LED(HIGH);
     bip(50, 2000);
     tLastPacket = tLastRead = millis();
     nBytesRead = 0;
@@ -622,5 +713,16 @@ void loop() {
       tLastRSSI = millis();
       clearDisplay(rssi);
     }
+  }
+  if (tLastCompass == 0 || millis() - tLastCompass > 200) {
+    sensors_event_t event;
+    mag.getEvent(&event);
+
+    heading = 180 * atan2((event.magnetic.y - offY) / scaleY, (event.magnetic.x - offX) / scaleX) / M_PI;
+    if (heading < 0) heading += 360;
+
+    //Serial.printf("%.2f, %.2f, %d\n", event.magnetic.x, event.magnetic.y, (int)heading);
+    displayCompass();
+    tLastCompass = millis();
   }
 }
