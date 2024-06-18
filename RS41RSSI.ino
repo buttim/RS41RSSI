@@ -20,6 +20,8 @@
 #include "sx126x_hal.h"
 #include "sx126x_long_pkt.h"
 
+#define COMPASS 1
+
 //SDA, SCL => 22, 21
 const int PACKET_LENGTH = 312, WIDTH = 84, HEIGHT = 48, SERIAL_LENGTH = 8,
 #if defined(ARDUINO_HELTEC_WIRELESS_MINI_SHELL)
@@ -48,7 +50,9 @@ Adafruit_PCD8544 disp = Adafruit_PCD8544(DISP_DC, DISP_CE, DISP_RST, &SPI);
 MD_KeySwitch buttonSel(BUTTON_SEL, LOW), buttonUp(BUTTON_UP, LOW);
 Ticker tickBuzzOff, tickSaveContrast;
 BluetoothSerial bt;
+#ifdef COMPASS
 Adafruit_HMC5883_Unified mag = Adafruit_HMC5883_Unified(12345);
+#endif
 char serial[SERIAL_LENGTH + 1] = "????????";
 uint32_t freq;
 uint8_t buf[PACKET_LENGTH], contrast;
@@ -162,6 +166,7 @@ void clearDisplay(int val) {
   disp.setFont(&Org_01);
   disp.setCursor(0, 20);
   disp.print("RS41\nRSSI");
+  disp.display();
 }
 
 void displayCompass() {
@@ -205,7 +210,7 @@ void updateDisplay(int rssi, int frame, const char* serial, bool encrypted, floa
   disp.setFont(&FreeSansBold9pt7b);
   dtostrf(rssi, 3, 1, s);
   disp.getTextBounds(s, 0, 0, &x1, &y1, &w, &h);
-  disp.setCursor(42 - w, 22);
+  disp.setCursor(48 - w, 22);
   disp.print(s);
 
   disp.setFont(NULL);
@@ -355,6 +360,7 @@ bool initBluetooth() {
   return true;
 }
 
+#ifdef COMPASS
 void calibrate() {
   disp.clearDisplay();
   disp.setCursor(5, 15);
@@ -390,6 +396,7 @@ void calibrate() {
   Serial.printf("***** offX:%.2f, offY:%.2f, scaleX:%.2f,scaleY=%.2f\n", offX, offY, scaleX, scaleY);
   writeEEPROM();
 }
+#endif
 
 void setup() {
   char s[20];
@@ -397,6 +404,7 @@ void setup() {
   Serial.begin(115200);
 
   initBluetooth();
+#ifdef COMPASS
   if (!mag.begin()) {
     Serial.println("No HMC5883 detected");
     while (1)
@@ -404,7 +412,7 @@ void setup() {
   }
   mag.setMagGain(HMC5883_MAGGAIN_1_3);
   mag.enableAutoRange(false);
-
+#endif
   const uint8_t* add = esp_bt_dev_get_address();
   snprintf(s, sizeof s, "RS41RSSI_%02X%02X%02X%02X%02X%02X", add[0], add[1], add[2], add[3], add[4], add[5]);
 
@@ -456,9 +464,10 @@ void setup() {
   initDisplay();
   clearDisplay(0);
 
+#ifdef COMPASS
   if (digitalRead(BUTTON_SEL) == LOW)
     calibrate();
-
+#endif
   sx126x_mod_params_gfsk_t modParams = {
     .br_in_bps = 4800,
     .fdev_in_hz = 3600,                          //?
@@ -714,6 +723,7 @@ void loop() {
       clearDisplay(rssi);
     }
   }
+#ifdef COMPASS
   if (tLastCompass == 0 || millis() - tLastCompass > 200) {
     sensors_event_t event;
     mag.getEvent(&event);
@@ -725,4 +735,5 @@ void loop() {
     displayCompass();
     tLastCompass = millis();
   }
+#endif
 }
