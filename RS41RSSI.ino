@@ -56,9 +56,10 @@ Adafruit_HMC5883_Unified mag = Adafruit_HMC5883_Unified(12345);
 char serial[SERIAL_LENGTH + 1] = "????????";
 uint32_t freq;
 uint8_t buf[PACKET_LENGTH], contrast;
-int frame = 0, rssi, nBytesRead = 0;
-float lat = 0, lng = 0, alt = 0,
+int frame = 0, rssi, nBytesRead = 0, burstKill;
+double lat = 0, lng = 0, 
       offX = 24.50, offY = 35.70, scaleX = 17.27, scaleY = 17.73, heading;
+float alt = 0;
 bool encrypted = false, mute = false;
 // clang-format off
 const uint8_t flipByte[] = {
@@ -199,7 +200,7 @@ void drawBar(uint8_t val) {
   disp.fillRect(0, 0, w, 6, BLACK);
 }
 
-void updateDisplay(int rssi, int frame, const char* serial, bool encrypted, float lat, float lng, float alt) {
+void updateDisplay(int rssi, int frame, const char* serial, bool encrypted, double lat, double lng, float alt) {
   int16_t x1, y1;
   uint16_t w, h;
   static char s[10];
@@ -237,7 +238,8 @@ void updateDisplay(int rssi, int frame, const char* serial, bool encrypted, floa
     disp.setCursor(40, 38);
     dtostrf(lng, 8, 5, s);
     disp.print(s);
-    itoa((int)alt, s, 10);
+    // itoa((int)alt, s, 10);
+    itoa(burstKill, s, 10);
     disp.getTextBounds(s, 0, 0, &x1, &y1, &w, &h);
     disp.setCursor(83 - w, 44);
     disp.print(s);
@@ -554,40 +556,100 @@ bool correctErrors(uint8_t data[]) {
   return true;
 }
 
-//https://gis.stackexchange.com/questions/265909/converting-from-ecef-to-geodetic-coordinates
-void ecef2wgs84(float x, float y, float z, float& lat, float& lng, float& height) {
-  // WGS84 constants
-  float a = 6378137.0,
-        f = 1.0 / 298.257223563;
-  // derived constants
-  float b = a - f * a,
-        e = sqrt(pow(a, 2.0) - pow(b, 2.0)) / a,
-        clambda = atan2(y, x),
-        p = sqrt(pow(x, 2.0) + pow(y, 2)),
-        h_old = 0.0;
-  //first guess with h=0 meters
-  float theta = atan2(z, p * (1.0 - pow(e, 2.0))),
-        cs = cos(theta),
-        sn = sin(theta),
-        N = pow(a, 2.0) / sqrt(pow(a * cs, 2.0) + pow(b * sn, 2.0)),
-        h = p / cs - N;
-  int nMaxLoops = 100;
-  while (abs(h - h_old) > 1.0e-6 && nMaxLoops-- > 0) {
-    h_old = h;
-    theta = atan2(z, p * (1.0 - pow(e, 2.0) * N / (N + h)));
-    cs = cos(theta);
-    sn = sin(theta);
-    N = pow(a, 2.0) / sqrt(pow(a * cs, 2.0) + pow(b * sn, 2.0));
-    h = p / cs - N;
-  }
-  lng = clambda / M_PI * 180;
-  lat = theta / M_PI * 180;
-  height = h;
+//Accurate Conversion of Earth-Fixed Earth-Centered
+//Coordinates to Geodetic Coordinates
+//Karl Osen
+#define WGS84_INVAA +2.45817225764733181057e-0014    /* 1/(a^2) */
+#define WGS84_P1MEEDAA +2.44171631847341700642e-0014 /* (1-(e^2))/(a^2) */
+#define WGS84_EEEE +4.48147234524044602618e-0005     /* e^4 */
+#define WGS84_INVCBRT2 +7.93700525984099737380e-0001 /* 1/(2^(1/3)) */
+#define WGS84_INV3 +3.33333333333333333333e-0001     /* 1/3 */
+#define WGS84_INV6 +1.66666666666666666667e-0001     /* 1/6 */
+#define WGS84_EEEED4 +1.12036808631011150655e-0005   /* (e^4)/4 */
+#define WGS84_EED2 +3.34718999507065852867e-0003     /* (e^2)/2 */
+#define WGS84_P1MEE +9.93305620009858682943e-0001    /* 1-(e^2) */
+
+void ecef2wgs84(double x, double y, double z,double &lat, double &lon,float &alt) {
+    double latitude, longitude, altitude;
+
+    // The variables below correspond to symbols used in the paper
+    // "Accurate Conversion of Earth-Centered, Earth-Fixed Coordinates
+    // to Geodetic Coordinates"
+    double beta, C, dFdt, dt, dw, dz, F, G, H, i, k, m, n, p, P, t, u, v, w;
+
+    // Intermediate variables
+    double j, ww, mpn, g, tt, ttt, tttt, zu, wv, invuv, da;
+    double t1, t2, t3, t4, t5, t6, t7;
+
+    ww = x * x + y * y;
+    m = ww * WGS84_INVAA;
+    n = z * z * WGS84_P1MEEDAA;
+    mpn = m + n;
+    p = WGS84_INV6 * (mpn - WGS84_EEEE);
+    G = m * n * WGS84_EEEED4;
+    H = 2 * p * p * p + G;
+
+    C = pow(H + G + 2 * sqrt(H * G), WGS84_INV3) * WGS84_INVCBRT2;
+    i = -WGS84_EEEED4 - 0.5 * mpn;
+    P = p * p;
+    beta = WGS84_INV3 * i - C - P / C;
+    k = WGS84_EEEED4 * (WGS84_EEEED4 - mpn);
+
+    // Compute left part of t
+    t1 = beta * beta - k;
+    t2 = sqrt(t1);
+    t3 = t2 - 0.5 * (beta + i);
+    t4 = sqrt(t3);
+
+    // Compute right part of t
+    t5 = 0.5 * (beta - i);
+
+    // t5 may accidentally drop just below zero due to numeric turbulence
+    // This only occurs at latitudes close to +- 45.3 degrees
+    t5 = fabs(t5);
+    t6 = sqrt(t5);
+    t7 = (m < n) ? t6 : -t6;
+
+    // Add left and right parts
+    t = t4 + t7;
+
+    // Use Newton-Raphson's method to compute t correction
+    j = WGS84_EED2 * (m - n);
+    g = 2 * j;
+    tt = t * t;
+    ttt = tt * t;
+    tttt = tt * tt;
+    F = tttt + 2 * i * tt + g * t + k;
+    dFdt = 4 * ttt + 4 * i * t + g;
+    dt = -F / dFdt;
+
+    // Compute latitude (range -PI/2..PI/2)
+    u = t + dt + WGS84_EED2;
+    v = t + dt - WGS84_EED2;
+    w = sqrt(ww);
+    zu = z * u;
+    wv = w * v;
+    latitude = atan2(zu, wv);
+
+    // Compute altitude
+    invuv = 1 / (u * v);
+    dw = w - wv * invuv;
+    dz = z - zu * WGS84_P1MEE * invuv;
+    da = sqrt(dw * dw + dz * dz);
+    altitude = (u < 1) ? -da : da;
+
+    // Compute longitude (range -PI..PI)
+    longitude = atan2(y, x);
+
+    // Convert from radians to degrees
+    lat = latitude * 180.0 / M_PI;
+    lon = longitude * 180.0 / M_PI;
+    alt = altitude;
 }
 
 void processPacket(uint8_t buf[], int rssi) {
-  float x, y, z;
-  int n = 48 + 1;
+  double x, y, z;
+  int n = 48 + 1, subFrame;
 
   frame = 0;
   strcpy(serial, "????????");
@@ -608,6 +670,11 @@ void processPacket(uint8_t buf[], int rssi) {
         switch (blockType) {
           case 0x79:  //status
             frame = buf[n + 2] + (buf[n + 3] << 8);
+
+            subFrame = buf[n + 0x19];
+            if (subFrame==0x32)
+              burstKill = buf[n + 0x1A] + 256 * buf[n + 0x1B];
+            
             Serial.printf(" frame: %d [%.8s]", frame, buf + n + 4);
             if (bt.connected())
               bt.printf(",%d,%.8s", frame, buf + n + 4);
@@ -615,9 +682,9 @@ void processPacket(uint8_t buf[], int rssi) {
             serial[sizeof serial - 1] = 0;
             break;
           case 0x7B:  //GPSPOS
-            x = buf[n + 2] + 256 * (buf[n + 3] + 256 * (buf[n + 4] + 256 * buf[n + 5])) / 100.0;
-            y = buf[n + 6] + 256 * (buf[n + 7] + 256 * (buf[n + 8] + 256 * buf[n + 9])) / 100.0;
-            z = buf[n + 10] + 256 * (buf[n + 11] + 256 * (buf[n + 12] + 256 * buf[n + 13])) / 100.0;
+            x = (buf[n + 2] + 256 * (buf[n + 3] + 256 * (buf[n + 4] + 256 * buf[n + 5]))) / 100.0;
+            y = (buf[n + 6] + 256 * (buf[n + 7] + 256 * (buf[n + 8] + 256 * buf[n + 9]))) / 100.0;
+            z = (buf[n + 10] + 256 * (buf[n + 11] + 256 * (buf[n + 12] + 256 * buf[n + 13]))) / 100.0;
             ecef2wgs84(x, y, z, lat, lng, alt);
             Serial.printf(" lat:%f lon:%f h:%f", lat, lng, alt);
             if (bt.connected())
